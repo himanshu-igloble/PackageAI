@@ -321,12 +321,14 @@ def is_reference_mode(mode: str) -> bool:
     return mode in REFERENCE_MODES
 
 
-def manual_handling_envelope(drop_height_m: float = 0.91) -> dict[str, Any]:
+def manual_handling_envelope(drop_height_m: float | None = None) -> dict[str, Any]:
     """Hand-loading / parcel terminal envelope. Reference values.
 
     `drop_height_m` defaults to ~0.91 m (~3 ft typical parcel handling) but
     may be overridden by the user to reflect a known handling profile.
     """
+    if drop_height_m is None:
+        drop_height_m = 0.91
     return {
         "mode": "manual_handling",
         "n_rows": 0,
@@ -372,9 +374,7 @@ def blended_envelope(
         parts.append((
             "manual_handling",
             norm["manual_handling"],
-            manual_handling_envelope(
-                drop_height_m=manual_drop_height_m if manual_drop_height_m is not None else 0.91
-            ),
+            manual_handling_envelope(drop_height_m=manual_drop_height_m),
         ))
 
     if not parts:

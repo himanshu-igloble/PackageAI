@@ -1,4 +1,3 @@
-import pytest
 from backend.services import transit_data as td
 
 
@@ -14,3 +13,4 @@ def test_blended_envelope_uses_user_drop_height():
         manual_drop_height_m=1.0,
     )
     assert env["drop_height_m"] == 1.0
+    assert td.blended_envelope(mode_mix={"manual_handling": 1.0})["drop_height_m"] == 0.91
