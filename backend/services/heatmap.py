@@ -117,6 +117,9 @@ FEA_JET = _build_jet_lut(256)
 VIRIDIS = FEA_JET           # noqa: F841 (back-compat alias)
 LUT_SIZE = FEA_JET.shape[0]
 
+# McKee box-compression coefficient (BCT = MCKEE_COEFF * ECT * sqrt(perimeter * caliper)).
+MCKEE_COEFF = 5.87
+
 
 def colormap_lut() -> list[list[int]]:
     """Return the active colormap as a JS-shipable list of [r,g,b] in 0..255."""
@@ -341,11 +344,11 @@ def mckee_bct_n(*, ect_kn_m: float, caliper_mm: float, perimeter_mm: float) -> f
     """McKee box compression estimate. ECT in kN/m (== N/mm), caliper &
     perimeter in mm. Returns BCT (box compression strength) in newtons."""
     ect_n_per_mm = ect_kn_m            # kN/m == N/mm
-    return 5.87 * ect_n_per_mm * (perimeter_mm * caliper_mm) ** 0.5
+    return MCKEE_COEFF * ect_n_per_mm * (perimeter_mm * caliper_mm) ** 0.5
 
 
 def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str,
-                          utilization: float = 1.0) -> StressField:
+                          utilization: Optional[float] = None) -> StressField:
     """Heuristic stress field for a rectangular carton box.
 
     Uses the same pipeline as compute_field() — positional face-center math,
@@ -406,7 +409,7 @@ def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str,
         label = scenario.replace("_", " ").title()
         summary = "Carton stress field."
 
-    if utilization != 1.0:
+    if utilization is not None:
         # McKee BCT-referenced: scale the positional pattern by the real
         # applied_load / BCT utilization onto a FIXED 0..clamp scale (1.0 ==
         # BCT, i.e. predicted crush) so the 3 carton scenes are comparable and
@@ -414,12 +417,13 @@ def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str,
         clamp = 1.5
         stress_norm = _scale_to_yield(stress, utilization, clamp=clamp)
         scale = {
-            "min": 0.0,
-            "max": 1.0,
-            "units": "normalised stress (0=low, 1=peak)",
+            "mode": "mckee_bct",
+            "units": "applied_load/BCT",
+            "max_utilization": round(utilization, 3),
+            "yield_at": 1.0,
+            "clamp": clamp,
             "colormap": "fea-jet",
             "stops": LUT_SIZE,
-            "clamp": clamp,
         }
     else:
         # Backward-compatible per-scene min-max path (no board/load supplied).
@@ -484,7 +488,8 @@ def build_carton_scenes(case_summary: dict) -> tuple[list[dict], bytes]:
     # Applied column load on the BOTTOM carton in a stack.
     #   applied_load_n = (stack_height - 1) * carton_mass_kg * g
     # The bottom carton carries everything above it. carton_mass_kg is taken
-    # from case_summary if present (carton_mass_kg / content_mass_kg summed),
+    # from case_summary if present (sum of carton_mass_kg + content_mass_kg
+    # when present),
     # otherwise estimated as carton_volume_m3 * a nominal packed density of
     # 150 kg/m^3 (light retail goods + board) — a documented stand-in so the
     # utilization still varies with board grade and stack height.
@@ -506,12 +511,13 @@ def build_carton_scenes(case_summary: dict) -> tuple[list[dict], bytes]:
 
     utilization = applied_load_n / bct if bct > 1e-9 else 0.0
 
-    carton_scale = {
-        "mode": "mckee_bct",
-        "units": "applied_load/BCT",
-        "max_utilization": round(utilization, 3),
+    # Non-conflicting provenance keys merged onto the carton scene scale on the
+    # load path. The coherent mode/units/max_utilization are owned by
+    # _compute_carton_field; here we only add keys that don't collide.
+    carton_provenance = {
         "bct_n": round(bct, 1),
         "applied_load_n": round(applied_load_n, 1),
+        "board_grade_is_fallback": spec.is_fallback,
     }
 
     # Build and subdivide — 3 subdivisions gives 768 faces / ~386 vertices,
@@ -521,15 +527,17 @@ def build_carton_scenes(case_summary: dict) -> tuple[list[dict], bytes]:
         mesh = mesh.subdivide()
 
     # When there's no real applied load (single-high stack / unknown), fall
-    # back to the legacy per-scene normalised field (utilization == 1.0 path).
-    field_util = utilization if applied_load_n > 0.0 else 1.0
+    # back to the legacy per-scene normalised field (utilization is None path).
+    field_util = utilization if applied_load_n > 0.0 else None
 
     scenes: list[dict] = []
     for sc in ("carton_top_load", "carton_corner_crush", "carton_side_wall"):
         field = _compute_carton_field(mesh, sc, utilization=field_util)
         scene_scale = dict(field.scale)
         if applied_load_n > 0.0:
-            scene_scale.update(carton_scale)
+            # Only add non-conflicting provenance keys; do NOT overwrite the
+            # units/mode/max_utilization owned by _compute_carton_field.
+            scene_scale.update(carton_provenance)
         scenes.append({
             "scenario": field.scenario,
             "label": field.label,
