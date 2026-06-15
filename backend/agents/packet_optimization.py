@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..llm.gemini_client import get_gemini
-from .objective_ranking import rank_variants
+from .objective_ranking import rank_objects
 
 
 # ---------------------------------------------------------------------------
@@ -579,14 +579,14 @@ class PacketOptimizationAgent:
             v.cost_impact_pct = _cost_for(v)
             alternatives.append(v)
 
-        # Rank by the user's objective BEFORE truncating to 3.
-        ranked = rank_variants(
-            [a.model_dump() for a in alternatives], intent=intent,
+        # Rank by the user's objective BEFORE truncating to 3. rank_objects
+        # re-maps by object identity, so variants sharing a `name` (the LLM's
+        # default "Alternative" label) are never confused / dropped.
+        alternatives = rank_objects(
+            alternatives, intent=intent,
             baseline_relative_key="cost_impact_pct",
             strict=(intent == "reduce_cost"),
-        )
-        by_name: dict[str, PacketDesignVariant] = {a.name: a for a in alternatives}
-        alternatives = [by_name[d["name"]] for d in ranked][:3]
+        )[:3]
 
         if not narrative:
             narrative = (
@@ -614,8 +614,9 @@ class PacketOptimizationAgent:
             a_lam    = a.fields.get("laminate_structure") or b_lam
             a_thick  = float(a.fields.get("total_thickness_micron") or b_thick)
             a_carton = a.fields.get("carton") or b_carton
-            cost_pct = _cost_impact_pct(b_lam, b_thick, b_carton, a_lam, a_thick, a_carton)
-            a.cost_impact_pct = cost_pct
+            # Read the value already set by _cost_for (used for ranking) so the
+            # ranked-on value and displayed value can't diverge.
+            cost_pct = a.cost_impact_pct
             comparison_rows.append({
                 "name":             a.name,
                 "laminate":         a_lam or "—",

@@ -34,7 +34,7 @@ from ..models import MaterialRecord
 from ..schemas import GeometrySummary, MaterialLookupResult
 from .ista2a import Ista2AAgent
 from .material import MaterialAgent
-from .objective_ranking import rank_variants
+from .objective_ranking import rank_objects
 from .pcr import PCRAgent
 
 
@@ -524,7 +524,7 @@ class OptimizationAgent:
         tracking each original object alongside its dict view.
         """
         seen: set = set()
-        pairs: list[tuple[dict, Any]] = []   # (dict_view, original_object)
+        passing_originals: list[Any] = []   # ISTA-passing, de-duplicated originals
         for v in candidates:
             d = v if isinstance(v, dict) else v.model_dump()
             if not d.get("passes_ista"):
@@ -533,18 +533,14 @@ class OptimizationAgent:
             if sig in seen:
                 continue
             seen.add(sig)
-            pairs.append((d, v))
+            passing_originals.append(v)
 
-        dict_views = [d for d, _ in pairs]
-        ranked_dicts = rank_variants(
-            dict_views, intent=intent,
-            baseline_relative_key="roi_pct", strict=False,
-        )
-        # Re-map ranked dicts back to their originals, preserving rank order.
-        # Identity match keeps duplicate names safe.
-        order = {id(d): orig for d, orig in pairs}
-        ranked = [order[id(d)] for d in ranked_dicts]
-        return ranked[:target_passing]
+        # rank_objects re-maps by object identity, so variants sharing a `name`
+        # are never confused. Bare dicts pass straight through (dict branch).
+        return rank_objects(
+            passing_originals, intent=intent,
+            baseline_relative_key=None, strict=False,
+        )[:target_passing]
 
     # ── main entry: iterate until N passing variants exist ─────────────
 

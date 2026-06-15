@@ -68,3 +68,35 @@ def rank_variants(
     present = [v for v in pool if _value(v, key) is not None]
     present.sort(key=lambda v: _value(v, key), reverse=(direction == "max"))
     return present + missing
+
+
+def rank_objects(
+    objects: list[Any],
+    *,
+    intent: str,
+    baseline_relative_key: str | None = None,
+    strict: bool = False,
+    dump=None,
+) -> list[Any]:
+    """Rank arbitrary variant OBJECTS (or dicts) by `intent`, returning the
+    original objects in best-first order. Uses object identity (id of the
+    dict-view) for the re-map, so variants sharing a `name` are never confused.
+
+    `dump` converts an object to a metric dict; defaults to `.model_dump()` if
+    present, else `dict(obj)` if already a mapping, else `vars(obj)`.
+    """
+    def _to_dict(o):
+        if dump is not None:
+            return dump(o)
+        if isinstance(o, dict):
+            return o
+        if hasattr(o, "model_dump"):
+            return o.model_dump()
+        return dict(vars(o))
+
+    pairs = [(o, _to_dict(o)) for o in objects]
+    order = {id(d): o for o, d in pairs}
+    ranked_dicts = rank_variants([d for _, d in pairs], intent=intent,
+                                 baseline_relative_key=baseline_relative_key,
+                                 strict=strict)
+    return [order[id(d)] for d in ranked_dicts]

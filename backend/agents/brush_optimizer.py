@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..llm.gemini_client import get_gemini
-from .objective_ranking import rank_variants
+from .objective_ranking import rank_objects
 
 
 # ---------------------------------------------------------------------------
@@ -510,14 +510,14 @@ class BrushOptimizationAgent:
             v.cost_impact_pct = _cost_for(v)
             alternatives.append(v)
 
-        # Rank by the user's objective BEFORE truncating to 3.
-        ranked = rank_variants(
-            [a.model_dump() for a in alternatives], intent=intent,
+        # Rank by the user's objective BEFORE truncating to 3. rank_objects
+        # re-maps by object identity, so variants sharing a `name` (the LLM's
+        # default "Alternative" label) are never confused / dropped.
+        alternatives = rank_objects(
+            alternatives, intent=intent,
             baseline_relative_key="cost_impact_pct",
             strict=(intent == "reduce_cost"),
-        )
-        by_name: dict[str, BrushDesignVariant] = {a.name: a for a in alternatives}
-        alternatives = [by_name[d["name"]] for d in ranked][:3]
+        )[:3]
 
         if not narrative:
             narrative = (
@@ -544,8 +544,9 @@ class BrushOptimizationAgent:
             a_pack   = a.fields.get("primary_pack_type") or b_pack
             a_mat    = a.fields.get("primary_pack_material") or b_mat
             a_carton = a.fields.get("carton") or b_carton
-            cost_pct = _cost_impact_pct(b_pack, b_mat, b_carton, a_pack, a_mat, a_carton)
-            a.cost_impact_pct = cost_pct
+            # Read the value already set by _cost_for (used for ranking) so the
+            # ranked-on value and displayed value can't diverge.
+            cost_pct = a.cost_impact_pct
             comparison_rows.append({
                 "name":              a.name,
                 "primary_pack":      a_pack,
