@@ -56,3 +56,14 @@ def test_pcr_canonicalise_preserves_pcr_corrugated():
     from backend.agents.pcr import _canonicalise
     assert _canonicalise("PCR-Corrugated-E") == "PCR-Corrugated-E"
     assert _canonicalise("E-flute") == "Corrugated E-flute"
+
+
+def test_carton_type_to_material_respects_explicit_flute_over_generic_type():
+    from backend.routes.cases import _carton_type_to_material
+    # generic corrugated carton_type but explicit E-flute grade => E-flute, not B
+    assert _carton_type_to_material("corrugated_carton", "E-flute") == "Corrugated E-flute"
+    assert _carton_type_to_material("corrugated_carton", "C-flute") == "Corrugated C-flute"
+    # no explicit flute grade => existing generic behaviour (B-flute) preserved
+    assert _carton_type_to_material("corrugated_carton", "") == "Corrugated B-flute"
+    # non-corrugated carton_type with no flute grade unchanged (paperboard)
+    assert _carton_type_to_material("mono_carton", "") == "Kraft Paperboard"

@@ -651,15 +651,17 @@ def _carton_type_to_material(carton_type: str, board_grade: str) -> str | None:
     """Map a carton_type / board_grade string to a DB material name."""
     ct = carton_type.lower().replace("-", "_").replace(" ", "_")
     bg = board_grade.lower()
+    # An explicit flute grade in board_grade wins over a generic carton_type:
+    # e.g. corrugated_carton + "E-flute" must NOT collapse to B-flute.
+    if (c := canonical_flute_name(board_grade)):
+        return c
     # Corrugated formats map to Corrugated B-flute
     if ct in ("corrugated_carton", "corrugated_shipper", "tray"):
         return "Corrugated B-flute"
     # Rigid box / mono carton use paperboard
     if ct in ("rigid_box", "mono_carton", "display_carton", "master_case"):
         return "Kraft Paperboard"
-    # Grade-based fallback: flute → corrugated, ply → paperboard or corrugated
-    if (c := canonical_flute_name(board_grade)):
-        return c
+    # Grade-based fallback: ply → paperboard or corrugated
     if "5" in bg or "3" in bg:
         return "Corrugated B-flute"
     if "ply" in bg:
