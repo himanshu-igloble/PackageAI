@@ -1861,6 +1861,13 @@ const transitState = {
   durations_min: {},
   manual_drop_height_m: 1.0,
 };
+// Show/hide the manual-drop-height row based on whether any manual-handling
+// share is present. Single source of truth for the toggle (called from each
+// site that previously duplicated the expression).
+function syncManualDropRow() {
+  const r = document.getElementById("manual-drop-row");
+  if (r) r.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
+}
 async function renderTransitStage() {
   // Modes split into two tiers: `dataBacked` have real CSV telemetry (truck,
   // pickup, ship); `selectable` additionally includes reference modes (air,
@@ -1898,8 +1905,7 @@ async function renderTransitStage() {
       const m = line.dataset.mode;
       transitState.mode_mix[m] = parseInt(e.target.value, 10);
       line.querySelector(".mode-pct").textContent = transitState.mode_mix[m] + "%";
-      const dropRow = $("manual-drop-row");
-      if (dropRow) dropRow.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
+      syncManualDropRow();
       previewEnvelope();
       pushTransitToBrief();
     });
@@ -1936,8 +1942,7 @@ async function renderTransitStage() {
     if (!el) return;
     el.onchange = () => { previewEnvelope(); pushTransitToBrief(); };
   });
-  const dropRow = $("manual-drop-row");
-  if (dropRow) dropRow.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
+  syncManualDropRow();
   previewEnvelope();
 }
 
@@ -1948,11 +1953,21 @@ function _transitDurationsAndDrop() {
   const dropHEl = document.getElementById("transit-drop-h");
   const truckDur = truckDurEl ? Number(truckDurEl.value) : 480;
   const otherHrs = otherDurEl ? Number(otherDurEl.value || 0) : 0;
-  const durations_min = {
-    truck: truckDur, pickup: truckDur,
-    air: otherHrs * 60, rail: otherHrs * 60, ship: otherHrs * 60,
-  };
+  // Truck/pickup always have a value from the truck-duration select. Only
+  // include air/rail/ship when the user actually entered a duration > 0 —
+  // otherwise OMIT them so the backend's per-mode defaults (blended_envelope
+  // only falls back when a key is ABSENT) stay in effect.
+  const durations_min = { truck: truckDur, pickup: truckDur };
+  if (otherHrs > 0) {
+    durations_min.air = otherHrs * 60;
+    durations_min.rail = otherHrs * 60;
+    durations_min.ship = otherHrs * 60;
+  }
   const manual_drop_height_m = dropHEl ? Number(dropHEl.value) : 1.0;
+  // Mirror onto transitState so the fields stay authoritative and consistent
+  // with how the rest of transitState tracks the controls.
+  transitState.durations_min = durations_min;
+  transitState.manual_drop_height_m = manual_drop_height_m;
   return { durations_min, manual_drop_height_m };
 }
 
