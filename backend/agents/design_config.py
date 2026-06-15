@@ -16,9 +16,12 @@ class DesignConfig:
 
 def build_design_config(case_summary: dict, *, drop_height_m: float) -> DesignConfig:
     s = case_summary or {}
+    # Mass priority MUST match the orchestrator's calc/ISTA path exactly so the
+    # consistency gate only fires on real divergence. Orchestrator uses:
+    #   (gross_weight_g/1000) if gross_weight_g else float(filled_mass_kg or 0.6)
     gross_g = s.get("gross_weight_g")
     filled = s.get("filled_mass_kg")
-    mass_kg = float(filled) if filled else (float(gross_g) / 1000.0 if gross_g else 0.6)
+    mass_kg = (float(gross_g) / 1000.0) if gross_g else float(filled or 0.6)
     board = s.get("carton_board_grade")
     return DesignConfig(
         material_name=s.get("material"),

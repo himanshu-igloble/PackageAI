@@ -1184,11 +1184,10 @@ class Orchestrator:
 
             # --- Cross-module consistency snapshot + NON-FATAL gate (Task F3) ---
             # Compare each module's design params against the canonical
-            # design_cfg. Mass is NOT silently unified: the deterministic/ISTA
-            # path uses gross_weight_g→filled_mass_kg→0.6 (approx_mass_kg /
-            # mass_kg), whereas design_cfg prioritises filled_mass_kg first.
-            # Recording both lets review_consistency surface any divergence
-            # instead of hiding it behind a behaviour change to ISTA verdicts.
+            # design_cfg. The deterministic/ISTA path and design_cfg now share
+            # the SAME mass priority (gross_weight_g→filled_mass_kg→0.6, i.e.
+            # approx_mass_kg / mass_kg), so the gate fires only on REAL
+            # divergence rather than on every dual-input case.
             ista2a_drop_h = (snapshot.get("ista2a") or {}).get("drop_height_m")
             consistency_snapshot = {
                 "design_config": {

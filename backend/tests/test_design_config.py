@@ -19,11 +19,11 @@ def test_design_config_is_frozen():
         cfg.mass_kg = 9.9
 
 
-def test_mass_priority_filled_over_gross():
-    # filled_mass_kg wins over gross_weight_g when both present.
+def test_mass_priority_gross_over_filled():
+    # Mass priority matches the orchestrator: gross_weight_g wins over filled_mass_kg.
     cfg = build_design_config(
-        {"filled_mass_kg": 1.25, "gross_weight_g": 500}, drop_height_m=0.3)
-    assert cfg.mass_kg == 1.25
+        {"gross_weight_g": 500, "filled_mass_kg": 1.25}, drop_height_m=0.3)
+    assert cfg.mass_kg == 0.5
 
 
 def test_mass_default_when_nothing_provided():

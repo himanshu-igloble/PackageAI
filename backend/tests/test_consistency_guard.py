@@ -62,7 +62,16 @@ def test_review_consistency_empty_and_no_canonical_are_safe():
     assert g.review_consistency({"ista2a": {"material_name": "PET"}}).ok is True
 
 
+def test_design_config_mass_matches_gross_first_for_dual_input():
+    from backend.agents.design_config import build_design_config
+    s = {"material": "PET", "gross_weight_g": 800, "filled_mass_kg": 0.5}
+    cfg = build_design_config(s, drop_height_m=0.5)
+    # Orchestrator uses gross-first => 0.8 kg; design_config must match so the
+    # consistency gate does not false-fire.
+    assert cfg.mass_kg == 0.8
+
+
 def test_snapshot_collects_all_modules():
     from backend.orchestrator.orchestrator import Orchestrator
-    keys = Orchestrator._consistency_snapshot_keys()   # class-level contract
-    assert {"design_config", "deterministic", "ista2a", "ista6a", "report"} <= set(keys)
+    keys = set(Orchestrator._consistency_snapshot_keys())
+    assert keys == {"design_config", "deterministic", "ista2a", "ista6a", "report"}
