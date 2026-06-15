@@ -57,26 +57,24 @@ def available() -> bool:
     return any((DATA_DIR / f).exists() for f in FILES.values())
 
 
+def _exists(key: str) -> bool:
+    """True if the CSV backing `key` is present on disk."""
+    fname = FILES.get(key)
+    return bool(fname) and (DATA_DIR / fname).exists()
+
+
 # ──────────────────────────────────────────────────── envelope per transport
 
 
-def truck_envelope(road: str = "mixed") -> dict[str, Any]:
-    """Truck-mode envelope from real fleet telemetry.
+def _summarise_road_df(df: pd.DataFrame, road_types: set[str]) -> dict[str, Any]:
+    """Shared road-telemetry summary used by truck/pickup envelopes.
 
-    `road` is one of ROAD_LABELS. We filter the CSV's `road_type` (urban /
-    rural / motorway / unknown) into our four categories, then compute g_rms
-    from the `acceleration_ms2` column plus shock + roughness summaries.
+    Filters `df` by the CSV's `road_type` column to the supplied `road_types`,
+    then computes the g_rms / shock / roughness summary. The acceleration →
+    g_rms blend (GPS-derived value vs. the ISTA truck PSD reference) is kept
+    EXACTLY as the original truck envelope computed it.
     """
-    df = _load("truck")
-    # The CSV's road_type categories don't 1:1 match ours; map intelligently.
-    rtm = {
-        "smooth_highway":  ("motorway",),
-        "mixed":           ("rural", "motorway", "urban"),
-        "rough_secondary": ("rural", "urban"),
-        "off_road":        ("rural",),
-    }
-    keep = rtm.get(road, ("rural", "motorway", "urban"))
-    sub = df[df["road_type"].isin(keep)]
+    sub = df[df["road_type"].isin(road_types)]
     if len(sub) == 0:
         sub = df  # graceful degrade
 
@@ -104,8 +102,6 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
     psd_bins = psd_series.dropna().iloc[::max(1, len(psd_series) // 64)].head(64).tolist()
 
     return {
-        "mode": "truck",
-        "road": road,
         "n_rows": int(len(sub)),
         "g_rms": round(g_rms, 4),
         "g_p95": round(g_p95, 4),
@@ -113,8 +109,41 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
         "rough_road_prob": round(rough_mean, 3),
         "handling_risk_mean": round(handling_mean, 3),
         "psd_bins": [round(float(x), 6) for x in psd_bins],
-        "source_file": FILES["truck"],
     }
+
+
+def truck_envelope(road: str = "mixed") -> dict[str, Any]:
+    """Truck-mode envelope from real fleet telemetry.
+
+    `road` is one of ROAD_LABELS. We filter the CSV's `road_type` (urban /
+    rural / motorway / unknown) into our four categories, then compute g_rms
+    from the `acceleration_ms2` column plus shock + roughness summaries.
+    """
+    df = _load("truck")
+    # The CSV's road_type categories don't 1:1 match ours; map intelligently.
+    rtm = {
+        "smooth_highway":  {"motorway"},
+        "mixed":           {"rural", "motorway", "urban"},
+        "rough_secondary": {"rural", "urban"},
+        "off_road":        {"rural"},
+    }
+    env = _summarise_road_df(df, rtm.get(road, rtm["mixed"]))
+    env.update(mode="truck", road=road, source_file=FILES["truck"])
+    return env
+
+
+def pickup_envelope(road: str = "mixed") -> dict[str, Any]:
+    """Pickup-truck vibration/shock envelope. Same telemetry schema as truck."""
+    df = _load("pickup")
+    rtm = {
+        "smooth_highway":  {"motorway"},
+        "mixed":           {"rural", "motorway", "urban"},
+        "rough_secondary": {"rural", "urban"},
+        "off_road":        {"rural"},
+    }
+    env = _summarise_road_df(df, rtm.get(road, rtm["mixed"]))
+    env.update(mode="pickup", road=road, source_file=FILES["pickup"])
+    return env
 
 
 def ship_envelope(severity: str = "moderate") -> dict[str, Any]:
@@ -245,12 +274,14 @@ def ship_time_series(severity: str = "moderate", *, max_points: int = 8000) -> d
 
 def available_modes() -> list[str]:
     """Modes we have actual CSV data for. The UI only offers these as choices."""
-    have = []
-    if (DATA_DIR / FILES["truck"]).exists():
-        have.append("truck")
-    if any((DATA_DIR / FILES[f"ship_{s}"]).exists() for s in ("clean", "moderate", "severe")):
-        have.append("ship")
-    return have
+    modes: list[str] = []
+    if _exists("truck"):
+        modes.append("truck")
+    if _exists("pickup"):
+        modes.append("pickup")
+    if any(_exists(k) for k in ("ship_clean", "ship_moderate", "ship_severe")):
+        modes.append("ship")
+    return modes
 
 
 def air_envelope() -> dict[str, Any]:
@@ -302,6 +333,8 @@ def blended_envelope(
     parts: list[tuple[str, float, dict[str, Any]]] = []
     if norm.get("truck"):
         parts.append(("truck", norm["truck"], truck_envelope(road)))
+    if norm.get("pickup"):
+        parts.append(("pickup", norm["pickup"], pickup_envelope(road)))
     if norm.get("ship"):
         parts.append(("ship", norm["ship"], ship_envelope(ship_severity)))
     if norm.get("air"):
