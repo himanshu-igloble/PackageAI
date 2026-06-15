@@ -321,12 +321,16 @@ def is_reference_mode(mode: str) -> bool:
     return mode in REFERENCE_MODES
 
 
-def manual_handling_envelope() -> dict[str, Any]:
-    """Hand-loading / parcel terminal envelope. Reference values."""
+def manual_handling_envelope(drop_height_m: float = 0.91) -> dict[str, Any]:
+    """Hand-loading / parcel terminal envelope. Reference values.
+
+    `drop_height_m` defaults to ~0.91 m (~3 ft typical parcel handling) but
+    may be overridden by the user to reflect a known handling profile.
+    """
     return {
         "mode": "manual_handling",
         "n_rows": 0,
-        "drop_height_m": 0.91,    # ~3 ft typical parcel handling
+        "drop_height_m": float(drop_height_m),
         "handling_risk_mean": 0.85,
         "source_file": "industry_reference",
     }
@@ -339,6 +343,7 @@ def blended_envelope(
     mode_mix: dict[str, float],
     road: str = "mixed",
     ship_severity: str = "moderate",
+    manual_drop_height_m: float | None = None,
 ) -> dict[str, Any]:
     """Weight-blend per-mode envelopes by the user-supplied mode mix.
 
@@ -364,7 +369,13 @@ def blended_envelope(
     if norm.get("rail"):
         parts.append(("rail", norm["rail"], rail_envelope()))
     if norm.get("manual_handling"):
-        parts.append(("manual_handling", norm["manual_handling"], manual_handling_envelope()))
+        parts.append((
+            "manual_handling",
+            norm["manual_handling"],
+            manual_handling_envelope(
+                drop_height_m=manual_drop_height_m if manual_drop_height_m is not None else 0.91
+            ),
+        ))
 
     if not parts:
         # Default to mixed truck.
