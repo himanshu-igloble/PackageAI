@@ -38,3 +38,25 @@ def test_empty_mode_mix_duration_matches_fallback():
     env = td.blended_envelope(mode_mix={})
     # falls back to truck; duration should be truck's default, not 0
     assert env["vibration_duration_min"] == td._DEFAULT_DURATION_MIN["truck"]
+
+
+def test_longer_vibration_duration_accumulates_more_cycles():
+    from backend.agents.ista2a import Ista2AAgent
+
+    agent = Ista2AAgent()
+    # g_rms=0.9 -> g_peak=2.7 (above the fatigue threshold), so the S/N branch
+    # runs and cycle counts are populated (not None).
+    # _vibration_fatigue returns (g_peak, n_cycles, n_to_fail, verdict, rationale).
+    short = agent._vibration_fatigue(0.9, 60)
+    long = agent._vibration_fatigue(0.9, 12 * 60)
+
+    short_cycles = short[1]
+    long_cycles = long[1]
+    assert short_cycles is not None and long_cycles is not None
+    # More transit minutes => more accumulated vibration cycles.
+    assert long_cycles > short_cycles
+    # cycles-to-fail depends only on g_peak, so it must not change with duration.
+    assert long[2] == short[2]
+    # Longer exposure must never produce a *safer* verdict.
+    safer = {"pass": 0, "fail": 1}
+    assert safer[long[3]] >= safer[short[3]]

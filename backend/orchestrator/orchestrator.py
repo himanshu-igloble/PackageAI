@@ -1066,6 +1066,8 @@ class Orchestrator:
                 geometry=geometry,
                 ships_loose=bool(s.get("ships_loose", False)),
                 vibration_g_rms=transit_env.vibration_g_rms,
+                vibration_duration_min=transit_env.vibration_duration_min,
+                user_drop_height_m=transit_env.drop_height_m,
                 calibration_multiplier=cal,
             )
             snapshot["ista2a"] = ista_report.model_dump()

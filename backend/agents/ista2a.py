@@ -236,6 +236,7 @@ class Ista2AAgent:
         mass_kg: float,
         drop_height_m: float,
         material: Optional[MaterialLookupResult],
+        drop_height_basis: str = "ISTA-2A weight class",
     ) -> DropVerdict:
         v = math.sqrt(2 * GRAVITY * drop_height_m)
         delta = STOPPING_DISTANCE_M[orientation]
@@ -273,6 +274,8 @@ class Ista2AAgent:
         )
 
         assumptions = [
+            Assumption("drop_height_m", round(drop_height_m, 3),
+                       f"Drop height basis: {drop_height_basis}."),
             Assumption("pulse_shape_factor", PULSE_SHAPE_FACTOR,
                        "Half-sine impulse approximation for rigid impact pulse."),
             Assumption("stopping_distance_mm", round(delta * 1000, 2),
@@ -463,13 +466,23 @@ class Ista2AAgent:
         ships_loose: bool = False,
         vibration_g_rms: float = ISTA_2A_VIBRATION_G_RMS,
         vibration_duration_min: int = ISTA_2A_VIBRATION_MIN_DEFAULT,
+        user_drop_height_m: float | None = None,
         calibration_multiplier: float = 1.0,
     ) -> Ista2AReport:
-        cls, drop_h = weight_class_for(mass_kg)
+        cls, weight_class_drop_h = weight_class_for(mass_kg)
+        # A user-specified transit drop height (from the configured transit
+        # envelope) overrides the ISTA-2A weight-class lookup when provided.
+        if user_drop_height_m:
+            drop_h = user_drop_height_m
+            drop_height_basis = "user_specified"
+        else:
+            drop_h = weight_class_drop_h
+            drop_height_basis = f"ISTA-2A weight class {cls}"
         drops = [
             self._drop_verdict(
                 orientation=o, mass_kg=mass_kg,
                 drop_height_m=drop_h, material=material,
+                drop_height_basis=drop_height_basis,
             )
             for o in ("top", "bottom", "side")
         ]
@@ -510,7 +523,9 @@ class Ista2AAgent:
         overall = "fail" if any(v == "fail" for v in verdicts) else "pass"
 
         notes = [
-            "Drop heights per ISTA 2A weight class (paraphrased from public summaries).",
+            (f"Drop height {drop_h:.3f} m (user-specified transit drop height)."
+             if user_drop_height_m else
+             "Drop heights per ISTA 2A weight class (paraphrased from public summaries)."),
             "Peak-force impulse model with half-sine pulse shape; not validated FEA.",
             f"Vibration: {vibration_g_rms} g_rms, {vibration_duration_min} min (truck PSD reference).",
         ]
