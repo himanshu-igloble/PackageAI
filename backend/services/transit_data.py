@@ -39,6 +39,17 @@ FILES: dict[str, str] = {
 
 ROAD_LABELS = ("smooth_highway", "mixed", "rough_secondary", "off_road")
 
+# Default per-mode vibration-exposure durations (minutes). Used when the caller
+# does not supply an explicit duration for a mode in the mix.
+_DEFAULT_DURATION_MIN = {
+    "truck": 480.0,        # 8 h
+    "pickup": 120.0,       # 2 h
+    "ship": 7 * 24 * 60.0, # 7 days
+    "air": 6 * 60.0,       # 6 h
+    "rail": 24 * 60.0,     # 24 h
+    "manual_handling": 5.0,
+}
+
 # The CSV's road_type categories don't 1:1 match ours; map intelligently.
 ROAD_TYPE_MAP: dict[str, set[str]] = {
     "smooth_highway":  {"motorway"},
@@ -346,6 +357,7 @@ def blended_envelope(
     road: str = "mixed",
     ship_severity: str = "moderate",
     manual_drop_height_m: float | None = None,
+    durations_min: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Weight-blend per-mode envelopes by the user-supplied mode mix.
 
@@ -381,6 +393,14 @@ def blended_envelope(
         # Default to mixed truck.
         parts.append(("truck", 1.0, truck_envelope("mixed")))
 
+    # Composite vibration-exposure duration: weighted sum of per-mode minutes
+    # (caller-supplied durations override the per-mode defaults).
+    durations_min = durations_min or {}
+    vib_minutes = 0.0
+    for mode, w in norm.items():
+        default = _DEFAULT_DURATION_MIN.get(mode, 60.0)
+        vib_minutes += w * float(durations_min.get(mode, default))
+
     g_rms = sum(w * env.get("g_rms", 0.0) for _, w, env in parts)
     drop_h = max(env.get("drop_height_m", 0.0) for _, _, env in parts) or 0.61
     handling = max(env.get("handling_risk_mean", 0.0) for _, _, env in parts)
@@ -404,6 +424,7 @@ def blended_envelope(
     return {
         "mode_mix": norm,
         "g_rms": round(g_rms, 4),
+        "vibration_duration_min": round(vib_minutes, 1),
         "drop_height_m": round(drop_h, 3),
         "compression_load_n": round(compression_n, 1),
         "handling_fraction": round(min(handling, 1.0), 3),

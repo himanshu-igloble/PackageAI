@@ -137,6 +137,7 @@ class GeometrySummary(BaseModel):
 class TransitEnvelope(BaseModel):
     mode_mix: dict[str, float]
     vibration_g_rms: float
+    vibration_duration_min: float = 60.0
     drop_height_m: float
     compression_load_n: float
     handling_fraction: float

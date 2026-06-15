@@ -44,14 +44,19 @@ class TransitAgent:
         *,
         road: str = "mixed",
         ship_severity: str = "moderate",
+        durations_min: dict[str, float] | None = None,
+        manual_drop_height_m: float | None = None,
     ) -> TransitEnvelope:
         env = td.blended_envelope(
             mode_mix=mode_mix, road=road, ship_severity=ship_severity,
+            durations_min=durations_min,
+            manual_drop_height_m=manual_drop_height_m,
         )
 
         return TransitEnvelope(
             mode_mix=env["mode_mix"],
             vibration_g_rms=env["g_rms"],
+            vibration_duration_min=env.get("vibration_duration_min", 60.0),
             drop_height_m=env["drop_height_m"],
             compression_load_n=env["compression_load_n"],
             handling_fraction=env["handling_fraction"],
