@@ -1,0 +1,731 @@
+================================================================================
+DesignEdge / CPG ISTA — GCP Deployment Guide (WinSCP edition)
+================================================================================
+
+Audience: someone who has the project folder on their Windows machine and
+wants to push it to a fresh Google Cloud Compute Engine VM, get it running
+behind a real URL, and know what to look at when something breaks.
+
+Estimated time: 30-45 minutes for the first deploy, < 5 minutes for redeploys.
+
+
+--------------------------------------------------------------------------------
+0.  WHAT YOU'RE DEPLOYING (ONE-MINUTE TOUR)
+--------------------------------------------------------------------------------
+
+It is a single Python (FastAPI) process that:
+    • Serves the static frontend (HTML / CSS / JS / 3D viewer) from "/".
+    • Exposes the API under "/api/...".
+    • Talks to the Gemini API for LLM calls (intake + reasoning).
+    • Persists everything to a SQLite file (cpg_ista.db) and to per-case
+      folders under storage/.
+    • Reads the 5 transit-telemetry CSVs from Transit_data/.
+
+There is NO separate frontend build step, NO database server to set up,
+NO Docker required. Python + uvicorn + your folder = working app.
+
+
+--------------------------------------------------------------------------------
+1.  PROVISION THE GCP VM
+--------------------------------------------------------------------------------
+
+Console: https://console.cloud.google.com/compute/instances → Create instance
+
+  Name:           designedge-prod
+  Region/Zone:    pick whatever is closest to your users
+                  (us-central1-a, asia-south1-b, etc.)
+  Machine type:   e2-standard-2  (2 vCPU, 8 GB RAM)
+                  ← e2-medium (4 GB) works for demo, but cadquery + trimesh
+                    can spike past 2 GB on big STEP files. 8 GB is safer.
+  Boot disk:      Ubuntu 22.04 LTS, 30 GB  (10 GB minimum, 30 GB comfortable)
+  Identity & API access:
+                  Allow default access is fine.
+  Firewall:       check BOTH "Allow HTTP traffic" and "Allow HTTPS traffic".
+                  (You can also add a custom rule for port 8765 if you want
+                   to bypass nginx during early testing — see §6.)
+
+Click Create. Wait ~30 seconds for the VM to boot.
+
+Note the EXTERNAL IP shown for the instance — you will need it for both
+WinSCP (file transfer) and the browser URL.
+
+
+--------------------------------------------------------------------------------
+2.  GET SSH KEYS WORKING ON WINDOWS (ONE-TIME)
+--------------------------------------------------------------------------------
+
+WinSCP and PuTTY share keys. The simplest path:
+
+  a. Install WinSCP        https://winscp.net/eng/download.php
+  b. WinSCP bundles PuTTYgen and Pageant.
+  c. Open PuTTYgen → Generate (move the mouse for entropy)
+     → Save private key  →  designedge.ppk
+     → Save public key   →  designedge.pub
+  d. Open the .pub file in Notepad. The single line at the top is your
+     public key. Format it as:
+         ssh-rsa AAAA... your_username
+     where "your_username" is the Linux username you want on the VM.
+  e. In GCP console → Compute Engine → Metadata → SSH Keys → Add Item
+     → paste the line above → Save.
+  f. Wait ~15s for GCP to propagate the key to the instance.
+
+You now have a username (whatever you put after the public key) and a .ppk
+file you can hand to WinSCP and PuTTY.
+
+
+--------------------------------------------------------------------------------
+3.  UPLOAD THE PROJECT WITH WinSCP
+--------------------------------------------------------------------------------
+
+Open WinSCP → Session:
+
+  File protocol:   SFTP
+  Host name:       <the EXTERNAL IP from §1>
+  Port number:     22
+  User name:       <your_username from §2.d>
+  Advanced → SSH → Authentication → Private key file:
+                   browse to designedge.ppk
+
+Click Login. Accept the host fingerprint the first time.
+
+You will land in /home/<your_username>/  on the right side, with your
+Windows files on the left.
+
+Drag the entire project folder (the folder that contains "backend/",
+"frontend/", "Transit_data/", "Assets/", "requirements.txt", ".env",
+"start.txt", etc.) from the left to the right panel.
+
+DO NOT upload these — they are huge and either junk or get rebuilt
+on the VM:
+    .venv/                  ← Python virtual environment, must be remade on Linux
+    __pycache__/            ← bytecode cache, regenerated on first import
+    .pytest_cache/          ← test cache
+    .qodo/                  ← editor scratch
+    node_modules/           ← if it ever appears, also skip
+    .DS_Store               ← macOS Finder noise
+    cpg_ista.db             ← only if you DON'T want to ship test data
+    storage/                ← only if you DON'T want to ship test cases
+    logs/                   ← old local logs
+
+You CAN exclude these in WinSCP via Options → Preferences → Transfer →
+Edit → File Mask:  add lines like  | .venv/; __pycache__/; *.pyc; .DS_Store
+
+Resulting layout on the server should look like:
+
+    /home/<user>/Bottle CPG/
+        backend/
+        frontend/
+        Transit_data/
+        Assets/
+        data/                   (price + material caches; auto-creates if missing)
+        requirements.txt
+        .env
+        start.txt
+        README.md
+
+If WinSCP transfer fails halfway, just drag the missing folders again —
+SFTP overwrites file-by-file, you don't need to start over.
+
+
+--------------------------------------------------------------------------------
+4.  INSTALL DEPENDENCIES ON THE VM
+--------------------------------------------------------------------------------
+
+Open PuTTY (or use WinSCP → Commands → Open in PuTTY) and SSH into the VM
+with the same .ppk + username.
+
+Once at the shell:
+
+  # 1) Update + system packages (Python 3.11+, build tools, libs cadquery
+  #    and trimesh need)
+  sudo apt update
+  sudo apt install -y python3.11 python3.11-venv python3.11-dev \
+                      build-essential libgl1 libglu1-mesa libxrender1 \
+                      libxext6 libsm6 libxi6 git nginx
+
+  # 2) Move into the project
+  cd "/home/$USER/Bottle CPG"
+
+  # 3) Create the virtual env (lives inside the project folder)
+  python3.11 -m venv .venv
+
+  # 4) Activate it and install pinned deps
+  source .venv/bin/activate
+  pip install --upgrade pip
+  pip install -r requirements.txt
+
+  # 5) Optional but recommended for STEP file parsing:
+  pip install cadquery==2.7.0
+  # (Without cadquery, .step / .stp uploads fall back to a labelled demo
+  # proxy mesh — the app still works, it just shows a generic bottle.)
+
+  # 6) Smoke-test that the app imports
+  python -c "from backend.main import app; print('ok, routes:', len(app.routes))"
+
+
+--------------------------------------------------------------------------------
+5.  CONFIGURE .env  (SECRETS GO HERE, NOT IN GIT)
+--------------------------------------------------------------------------------
+
+The repo ships a .env with placeholder values. Edit it on the VM:
+
+  nano .env
+
+  # Paste your real Gemini key:
+  GEMINI_API_KEY=AIzaSy...
+
+  # Defaults are fine for the rest. If you want to override:
+  GEMINI_INTAKE_MODEL=gemini-2.5-flash
+  GEMINI_REASONING_MODEL=gemini-3-pro
+  DATA_DIR=storage
+  DB_URL=sqlite:///./cpg_ista.db
+
+Save: Ctrl-O, Enter, Ctrl-X.
+
+Confirm the key is loaded:
+
+  source .venv/bin/activate
+  python -c "from backend.config import settings; print('key set:', bool(settings.GEMINI_API_KEY))"
+  # → key set: True
+
+
+--------------------------------------------------------------------------------
+6.  FIRST RUN (SANITY CHECK ON PORT 8765)
+--------------------------------------------------------------------------------
+
+Quick way to confirm everything works before adding nginx + systemd:
+
+  cd "/home/$USER/Bottle CPG"
+  source .venv/bin/activate
+  uvicorn backend.main:app --host 0.0.0.0 --port 8765
+
+You should see:
+  INFO:     Started server process [...]
+  INFO:     Uvicorn running on http://0.0.0.0:8765 (Press CTRL+C to quit)
+
+If you opened port 8765 in the GCP firewall (Compute Engine → Firewall →
+Create Rule, source 0.0.0.0/0, tcp:8765, target = your instance's tag),
+visit:
+    http://<EXTERNAL_IP>:8765/
+
+You should see the DesignEdge UI.
+
+Hit Ctrl-C when done. Production runs use systemd (next section).
+
+
+--------------------------------------------------------------------------------
+7.  PRODUCTION: systemd + nginx + (optional) HTTPS
+--------------------------------------------------------------------------------
+
+7a. systemd unit
+----------------
+
+Create /etc/systemd/system/designedge.service:
+
+  sudo nano /etc/systemd/system/designedge.service
+
+Paste (replace USER and PROJECT with your real values):
+
+  [Unit]
+  Description=DesignEdge ISTA copilot
+  After=network.target
+
+  [Service]
+  Type=simple
+  User=<your_username>
+  WorkingDirectory=/home/<your_username>/Bottle CPG
+  EnvironmentFile=/home/<your_username>/Bottle CPG/.env
+  ExecStart=/home/<your_username>/Bottle CPG/.venv/bin/uvicorn \
+              backend.main:app --host 127.0.0.1 --port 8765 \
+              --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+  Restart=on-failure
+  RestartSec=3
+  # Optional resource caps; tune for your VM size.
+  MemoryHigh=4G
+  MemoryMax=6G
+
+  [Install]
+  WantedBy=multi-user.target
+
+Activate:
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now designedge
+  sudo systemctl status designedge      # should say "active (running)"
+
+Live tail of the app log:
+
+  sudo journalctl -u designedge -f
+
+
+7b. nginx reverse proxy
+-----------------------
+
+Create /etc/nginx/sites-available/designedge:
+
+  sudo nano /etc/nginx/sites-available/designedge
+
+Paste (use your real domain or just _ for "any host"):
+
+  server {
+      listen 80;
+      server_name <your-domain.com>;     # or:  _
+
+      # Big enough for STEP file uploads
+      client_max_body_size 100M;
+
+      # SSE (Server-Sent Events) needs these proxy tweaks or the
+      # /api/cases/{id}/status/stream endpoint will buffer & stall.
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+
+      location / {
+          proxy_pass http://127.0.0.1:8765;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Connection "";
+      }
+  }
+
+Enable and reload:
+
+  sudo ln -s /etc/nginx/sites-available/designedge /etc/nginx/sites-enabled/
+  sudo rm -f /etc/nginx/sites-enabled/default
+  sudo nginx -t                # syntax check
+  sudo systemctl reload nginx
+
+Browse to http://<EXTERNAL_IP>/  — DesignEdge.
+
+
+7c. (Optional) HTTPS with Let's Encrypt
+---------------------------------------
+
+Only works if you've pointed a real DNS A record at the EXTERNAL_IP.
+
+  sudo apt install -y certbot python3-certbot-nginx
+  sudo certbot --nginx -d your-domain.com
+  # Follow the prompts — it edits the nginx file automatically.
+  # Auto-renew is set up via systemd timer; verify with:
+  sudo systemctl list-timers | grep certbot
+
+
+--------------------------------------------------------------------------------
+8.  WHAT EACH FILE / FOLDER CONTAINS
+--------------------------------------------------------------------------------
+
+Top level
+---------
+  README.md                Project overview, architecture summary.
+  requirements.txt         Pinned Python deps (FastAPI, SQLAlchemy, trimesh, etc.)
+  start.txt                The two-line dev-start command we use locally.
+  .env                     Secrets + LLM model knobs. NEVER commit a real key.
+  .gitignore               What git ignores; also a hint for what NOT to upload.
+  cpg_ista.db              SQLite database. Created on first run if missing.
+                           Holds: cases, messages, materials, analysis_results,
+                           geometry_assets, transit_profiles, optimisation_runs,
+                           audit log.
+
+Folders
+-------
+  Assets/                  Static brand assets served at /assets/
+                            • Bytedge-logo.png
+                            • logo-dark.svg
+  Transit_data/            Real CSV telemetry that drives the transit envelope:
+                            • truck_simulation_dataset_final.csv
+                            • pickup_truck_simulation_dataset.csv
+                            • ship_real_clean.csv
+                            • ship_real_moderate.csv
+                            • ship_real_severe.csv
+  Test Stp/                Sample STEP / STL files for QA. Not required in prod
+                           but harmless to leave there.
+  data/                    Auto-created JSON caches (write-through).
+                            • material_cache.json    Gemini-derived material
+                                                     properties keyed by name.
+                            • materials.json         Seed material catalogue.
+                            • price_cache.json       Cost-research-agent results
+                                                     (USD/kg from Gemini 3 Pro).
+  storage/                 One folder per case_id. Holds:
+                            • upload.step / .stl etc. (raw uploaded geometry)
+                            • mesh.glb                (parsed binary GLTF)
+                            • optional heatmap_*.png  (rendered overlays)
+                           Safe to delete; the app re-creates per case.
+  logs/                    Old local run logs. Production uses journalctl.
+
+Backend (Python — backend/)
+---------------------------
+  __init__.py              Marks the package.
+  config.py                Settings class. Loads .env, exposes
+                           settings.GEMINI_API_KEY, model chains, paths.
+  db.py                    SQLAlchemy engine + SessionLocal. init_db() runs at
+                           startup and creates tables if missing.
+  models.py                ORM models: Case, Message, GeometryAsset,
+                           MaterialRecord, TransitProfile, AnalysisResult,
+                           OptimizationRun, AuditEvent.
+  schemas.py               Pydantic schemas — the wire-format contracts for
+                           every agent's I/O (IntakeFields, ProposedPlan,
+                           GeometrySummary, MaterialLookupResult,
+                           TransitEnvelope, SurrogateRiskMap, etc.).
+  audit.py                 log_event() — append-only audit trail to AuditEvent.
+  seed.py                  seed_materials() — populates MaterialRecord from
+                           data/materials.json on first boot.
+  main.py                  FastAPI entrypoint. Mounts routers, /api/health,
+                           static /assets/, static / (frontend). Read this
+                           first if anything looks wrong at startup.
+
+  agents/                  Specialist agents.
+    base.py                GROUND_RULES shared by every LLM prompt
+                           (no fabrication, units mandatory, label
+                           confidence, etc.).
+    intake.py              Generic intake classifier (Gemini 2.5 Flash).
+                           Handles non-bottle packaging types.
+    bottle_flow.py         Conversational bottle-specific intake. Owns the
+                           cheap-extract logic ("mixed" → road_condition,
+                           "all" → transit_modes, etc.) and the LOCK on
+                           has_geometry — only an actual upload satisfies it.
+    material.py            DB → JSON cache → Gemini fallback waterfall for
+                           material properties.
+    transit.py             Builds a TransitEnvelope from mode_mix + road
+                           condition + ship severity.
+    calculation.py         Deterministic engineering calcs: drop energy,
+                           impact velocity, compression SF, thin-wall
+                           buckling. Hashed inputs for audit.
+    ista2a.py              ISTA 2A — top/bottom/side drop verdicts +
+                           transit/vibration verdicts. Always returns
+                           Pass or Fail (PET fallback when σ_y missing).
+    ista6a.py              ISTA 6A — Amazon corner-drop, always run.
+    surrogate.py           Approximate zone-wise risk map (labelled
+                           "approximate" — not FEA).
+    reasoning.py           Gemini-3-Pro self-check + ISTA cross-check pass.
+    report.py              Drafts the engineer-facing markdown report.
+    optimization.py        Iterates 6 candidates per round, up to 3 rounds,
+                           guarantees ≥3 passing alternatives. Owns the
+                           local price table; falls back to price_cache.
+    guardrail.py           Reviews calculations / text / material lookups
+                           and blocks unsafe outputs.
+
+  llm/
+    gemini_client.py       The single Gemini wrapper. Splits "intake" calls
+                           (Flash) from "reasoning" calls (Pro) with a
+                           fallback chain. .available, .intake_json(),
+                           .reason_json(). Never raises on transport errors.
+
+  orchestrator/
+    orchestrator.py        Top-level state machine. handle_user_message()
+                           routes to intake or bottle_flow; approve_plan()
+                           kicks off execute_approved_plan() which runs
+                           material → transit → calc → ista2a → ista6a →
+                           surrogate → heatmaps → reasoning → report.
+    state_machine.py       assert_transition() — declarative case-status
+                           transitions (intake → clarification →
+                           plan_proposed → executing → review → finalized).
+    status_bus.py          emit_status() + the per-case SSE generator.
+                           Powers the live "thinking" line in the chat.
+
+  routes/
+    cases.py               Case lifecycle: POST /cases, GET messages,
+                           POST messages, get/approve plan, upload geometry,
+                           get mesh, get heatmaps, SSE stream, name/list.
+    extras.py              Everything else: /users/{id}/stats (rollup +
+                           latest verdict + latest cost), /cases/{id}/cost,
+                           /materials/price (cost research agent),
+                           /materials/web-search, /materials/custom,
+                           /cases/{id}/snapshot, /cases/{id}/optimize/run,
+                           /cases/{id}/optimize/variant-heatmap,
+                           /cases/{id}/ista6a, /cases/{id}/save,
+                           /cases/{id}/signoff, /cases/{id}/report.pdf,
+                           /transit/charts, /transit/envelope.
+
+  services/
+    geometry_service.py    parse() — STEP/STL/OBJ/GLB → mesh + bbox + zones.
+                           Falls back to a labelled proxy bottle if cadquery
+                           is missing OR the parse fails.
+    visualization_service.py
+                           build_heatmap_scenes() — 4 scenes (top/bottom/
+                           side drop + transit) with per-vertex jet colors.
+    transit_data.py        Loads + downsamples the 5 Transit_data CSVs.
+                           Returns t_hours, vibration_g, shock_events,
+                           heave/pitch/roll, plus n_rows_total for axes.
+    charts.py              Older static-PNG chart helpers (mostly retired
+                           in favour of the canvas-based frontend charts).
+    heatmap.py             Pure-Python jet colormap + bbox-projected stress
+                           field. Used by visualization_service.
+    material_cache.py      JSON-backed Gemini lookup of material properties.
+    price_cache.py         JSON-backed cost-research agent. Local table →
+                           cache → Gemini 3 Pro web-derived → conservative
+                           fallback. Never returns null.
+    preferences.py         Aggregates user feedback to drive the
+                           personalisation summary in the sidebar.
+    report_pdf.py          ReportLab/Weasy fallback to a printable PDF.
+    agent_labels.py        Friendly names for SSE display ("material_agent"
+                           → "Material lookup").
+
+  tests/
+    test_ista_realism.py   14 golden tests locking ISTA 2A safety factors
+                           and ISTA 6A corner-drop verdicts into believable
+                           bands. Run with:
+                             .venv/bin/python -m pytest backend/tests/ -v
+
+Frontend (frontend/)
+--------------------
+  index.html               The single-page-app shell. Contains the topbar
+                           (Save Design button, health dot, user chip),
+                           the stage rail (8 stages + Optimise branch),
+                           one <section data-page="..."> per stage, the
+                           Geometry-required modal, the processing overlay,
+                           the spider-chart removed but its container is
+                           kept as a comment.
+  styles.css               Studio-Atelier design system. Variables in
+                           :root, paper-warm palette, plate cards,
+                           processing-verb-stage animation, dashboard ring
+                           tiles, chart-card with cc-spans and chart-tip,
+                           geometry-required modal, save button pulse,
+                           upload pulse animation.
+  app.js                   ~3,200-line SPA brain. Hash router (#/intake,
+                           #/geometry, ..., #/variant/{idx}); SSE handler;
+                           pure-canvas chart helpers (drawLineChart,
+                           drawScatterChart, drawMultiLineChart,
+                           drawPieChart, drawBarChart, drawTimeUsageChart);
+                           processing verb-cycler; Approve & Run flow
+                           with editable analysis summary; bare-mesh
+                           propagation (uploaded STEP shows in every
+                           visualization tab); 2D heatmap projection;
+                           geometry-required modal; cost research live
+                           sub-line.
+  viewer.js                Three.js wrapper. initViewer(), loadGlb(),
+                           applyVertexColors(), paintColorbar(),
+                           makeMiniViewer() factory used by results /
+                           sign-off / variant strips.
+
+
+--------------------------------------------------------------------------------
+9.  REDEPLOYING A CHANGE
+--------------------------------------------------------------------------------
+
+Most edits hit only the frontend (HTML/CSS/JS). For those:
+
+  1. WinSCP → drag the changed file(s) into /home/<user>/Bottle CPG/frontend/
+  2. Hard-refresh your browser (Ctrl+Shift+R) — no server restart needed.
+
+If you changed Python (.py):
+
+  1. WinSCP → drag the changed file(s) into the matching backend/ subfolder.
+  2. SSH:
+       sudo systemctl restart designedge
+       sudo journalctl -u designedge -f       # watch the new process boot
+
+If you changed requirements.txt:
+
+  1. Upload the new file.
+  2. SSH:
+       cd "/home/$USER/Bottle CPG"
+       source .venv/bin/activate
+       pip install -r requirements.txt
+       sudo systemctl restart designedge
+
+If you changed the .env (added a new key, rotated GEMINI_API_KEY, etc.):
+
+  1. nano .env
+  2. sudo systemctl restart designedge
+  (uvicorn does NOT pick up .env changes via --reload alone.)
+
+
+--------------------------------------------------------------------------------
+10. DEBUGGING — LOGS, COMMON SYMPTOMS, FIXES
+--------------------------------------------------------------------------------
+
+WHERE TO LOOK FIRST
+-------------------
+  sudo journalctl -u designedge -n 200 --no-pager     # last 200 lines
+  sudo journalctl -u designedge -f                    # live tail (Ctrl-C to stop)
+  sudo journalctl -u designedge --since "10 min ago"  # recent window
+  sudo tail -f /var/log/nginx/access.log              # browser → nginx
+  sudo tail -f /var/log/nginx/error.log               # nginx → app
+  sudo systemctl status designedge                    # is it running?
+
+If you suspect the Python service crashed at boot:
+  cd "/home/$USER/Bottle CPG"
+  source .venv/bin/activate
+  uvicorn backend.main:app --host 127.0.0.1 --port 8765
+  # Watch the traceback in the foreground. Easier than journalctl for first
+  # boots after a code change.
+
+
+SYMPTOM → CAUSE → FIX TABLE
+---------------------------
+
+❶  502 Bad Gateway from nginx
+    → uvicorn is not running, or crashed.
+    → sudo systemctl status designedge
+    → sudo journalctl -u designedge -n 100
+    → Common: missing dep (pip install ...), bad .env (typo), import error.
+
+❷  503 / connection refused on :8765
+    → systemctl says "active (running)" but nothing answers.
+    → Check the bind address. Service must be 127.0.0.1:8765 to match nginx.
+      If you see "0.0.0.0:8765", that also works for direct browser access
+      but is fine to leave for prod (firewall blocks it externally).
+
+❸  CORS errors in browser console
+    → main.py has allow_origins=["*"] (dev mode). Should still work behind
+      nginx. If you split the API onto a different host, tighten allow_origins
+      to ["https://your-domain.com"].
+
+❹  POST /api/cases/{id}/messages returns 500, log says
+   "GeminiClient: gemini-X-pro unavailable; trying next"
+    → Either GEMINI_API_KEY is wrong, OR the model name is no longer valid.
+    → Test the key directly:
+        python -c "from backend.llm.gemini_client import get_gemini; \
+                   g=get_gemini(); print('available:', g.available)"
+    → Update GEMINI_INTAKE_FALLBACK_MODELS or GEMINI_REASONING_FALLBACK_MODELS
+      in .env to a current model id, then restart.
+
+❺  Bot keeps re-asking "do you have a STEP file?" after the user said yes
+    → This is intentional — has_geometry only flips True via the upload
+      route. The user must drag-and-drop or click the paperclip in the
+      composer. Pulsing blue dot on the paperclip = active ask.
+    → If a real upload happened but the bot still asks, check journalctl
+      for "geometry_service" lines and confirm /api/cases/{id}/upload returned
+      200 (it auto-PATCHes the brief).
+
+❻  STEP file uploads always show the demo bottle
+    → cadquery is not installed in the venv.
+    → source .venv/bin/activate
+      pip install cadquery==2.7.0
+      sudo systemctl restart designedge
+
+❼  3D viewer is empty (white box) on Geometry/Results/Sign-off
+    → The Three.js viewer needs WebGL. Test in the same browser at
+      https://get.webgl.org/ — should show a spinning cube. If it doesn't,
+      the user's browser/GPU is blocking WebGL.
+    → If WebGL works but still empty: open the dev console (F12) and look
+      for "vertex color length mismatch" warnings — means the heatmap was
+      computed for a different mesh size than what loaded. Re-run analysis.
+
+❽  Dashboard counters stuck at 0
+    → Was a real bug; now fixed. If they regress, check:
+        curl http://127.0.0.1:8765/api/users/demo/stats
+      The numbers must be > 0 in the response. If they are, the frontend
+      animateCounter() is broken (look for ReferenceError in browser console).
+      If they aren't, the Case rows in cpg_ista.db all have user_id != "demo"
+      (frontend defaults to user_id = localStorage["designedge.user_id"] or
+      "demo"). Either set the localStorage value or change USER_ID in app.js.
+
+❾  Latest cost shows "—" forever
+    → The user has zero cases with material set. Add at least one case and
+      type a material name in chat ("HDPE", "PET", etc.). The price tile
+      reads from the most recent case with material populated.
+    → For unknown materials, the cost-research agent fires Gemini 3 Pro.
+      If your GEMINI_API_KEY is invalid, it falls back to $1.50/kg with
+      source="fallback". Check journalctl for "[GeminiClient]" warnings.
+
+❿  "Approve and run" looks stuck on the verb-cycler
+    → The overlay always shows for a minimum of 4 seconds, then closes
+      when the backend returns. If it's still spinning after 60s, the
+      backend is hung — sudo journalctl -u designedge -f will show why.
+      Common causes: Gemini API rate-limit, slow CSV load (first hit only).
+
+⓫  SSE (live "thinking" line) never appears, even on /api/health=ok
+    → nginx is buffering. Check that your nginx config has:
+         proxy_buffering off;
+         proxy_cache off;
+      and reload (sudo systemctl reload nginx).
+
+⓬  Out-of-memory kill on first STEP upload
+    → cadquery + trimesh together can spike past 4 GB on large CAD.
+      Bump the VM to e2-standard-2 (8 GB) or e2-standard-4 (16 GB).
+      Or set MemoryHigh=6G in the systemd unit.
+
+⓭  Static asset (logo, JS, CSS) returns 404
+    → Confirm Assets/ and frontend/ exist on the VM at the project root.
+      main.py mounts /assets and / unconditionally — if the folders are
+      missing, those mounts silently skip. ls -la to verify.
+
+
+HEALTH CHECKS YOU CAN HIT FROM A BROWSER OR curl
+------------------------------------------------
+  GET  /api/health
+       → {"status":"ok","ui_label":"All systems nominal",...}
+       Tells you if both LLM roles see a key.
+
+  GET  /api/users/demo/stats
+       → counters + latest_verdict + latest_cost
+       If numbers look wrong, the DB or USER_ID is the issue.
+
+  GET  /api/materials/price?name=PET
+       → {"name":"PET","price_usd_per_kg":1.5,"source":"local",...}
+       Confirms the cost-research path is reachable.
+
+  GET  /api/transit/charts?modes=truck&max_points=200
+       → {truck:{t_hours:[...],vibration_g:[...],...}}
+       Confirms the CSVs are loadable from disk.
+
+  GET  /api/cases/{any_existing_case_id}/snapshot
+       → full analysis snapshot if the case has been run.
+
+
+ROLLBACK / RECOVERY
+-------------------
+  • SQLite DB is one file: cpg_ista.db. Back it up with `cp` before any
+    risky change. Restore by copying the file back.
+  • Per-case storage is under storage/<case_id>/. Same — `tar czf` it.
+  • If the app refuses to boot after an upload, revert by re-uploading the
+    last-known-good copy of the offending file via WinSCP and
+    `sudo systemctl restart designedge`.
+
+
+--------------------------------------------------------------------------------
+11. ABOUT GEMINI MODEL NAMES (FUTURE-PROOFING)
+--------------------------------------------------------------------------------
+
+Google rotates model ids periodically. The .env defaults are the names
+that work today. If you see `[GeminiClient] gemini-X-Y unavailable;
+trying next` in the logs and the fallback chain also exhausts, look up
+the current ids at:
+
+    https://ai.google.dev/gemini-api/docs/models
+
+…and update GEMINI_INTAKE_MODEL / GEMINI_REASONING_MODEL accordingly.
+The fallback chain in .env makes single-model deprecations non-fatal:
+the app drops to the next entry until something answers.
+
+
+--------------------------------------------------------------------------------
+12. ONE-PAGER FOR HANDOFF
+--------------------------------------------------------------------------------
+
+Critical paths:
+  Project root:      /home/<user>/Bottle CPG
+  Service:           sudo systemctl {status|restart|stop} designedge
+  Logs:              sudo journalctl -u designedge -f
+  nginx:             /etc/nginx/sites-available/designedge
+  systemd unit:      /etc/systemd/system/designedge.service
+  App entry:         backend/main.py
+  Settings:          .env  (only file with secrets)
+  DB:                cpg_ista.db   (SQLite, single file)
+  Per-case files:    storage/<case_id>/
+
+A good day looks like:
+  $ sudo systemctl status designedge
+  ● designedge.service - DesignEdge ISTA copilot
+       Active: active (running) since ...
+       Memory: 380M
+       CPU: 12s
+
+  $ curl -s http://127.0.0.1:8765/api/health | python3 -m json.tool
+  {
+      "status": "ok",
+      "ui_label": "All systems nominal",
+      "intake_llm":   {"available": true,  "model": "gemini-2.5-flash"},
+      "reasoning_llm":{"available": true,  "model": "gemini-3-pro"}
+  }
+
+If both lines look like that, the rest is just frontend.
+
+================================================================================
+                                end of guide
+================================================================================

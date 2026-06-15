@@ -1,0 +1,10 @@
+{
+  "polyhydroxyalkanoate (pha)": {
+    "confidence": "estimated",
+    "name": "Polyhydroxyalkanoate (PHA)",
+    "notes": "Reflects bulk contract pricing for common injection molding and film-grade PHA bioplastic pellets.",
+    "price_usd_per_kg": 5.5,
+    "source": "gemini-3-pro \u00b7 web-derived (Specialty biopolymer market reports \u00b7 packaging-grade pellet",
+    "ts": "2026-05-14T06:54:01+00:00"
+  }
+}

@@ -1,0 +1,6 @@
+lsof -ti:8765 | xargs kill -9 2>/dev/null
+cd "/Users/maymay/Desktop/Bottle CPG"
+.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8765 --reload
+# → open http://127.0.0.1 :8765 in your browser
+
+

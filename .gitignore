@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.db
+*.sqlite3
+.env
+.venv/
+venv/
+env/
+frames/
+*.mp4
+__MACOSX/
+node_modules/
+.pytest_cache/
+storage/
+logs/
+*.log

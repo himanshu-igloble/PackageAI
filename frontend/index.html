@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PackTwin.ai — your packaging engineering twin.</title>
+
+  <!-- Studio Atelier type stack: Montserrat + IBM Plex Serif (specimen) + Plex Mono (data) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,300;0,400;1,300;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+  <link rel="stylesheet" href="/styles.css?v=2026-05-25-e" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three":               "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+        "marked":              "https://cdn.jsdelivr.net/npm/marked@12.0.0/+esm"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <!-- Top progress rail — just the bar; the label was removed because the
+       chat now narrates what the agent is doing inline (see thinking line). -->
+  <div id="progress-rail" class="progress-rail" aria-hidden="true">
+    <div id="progress-fill" class="progress-fill"></div>
+    <span id="progress-label" hidden></span>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────── topbar ─── -->
+  <header class="topbar">
+    <button id="sidebar-toggle" class="icon-btn only-mobile" aria-label="open menu">≡</button>
+    <a class="brand-link" href="#/intake" aria-label="PackTwin.AI home" title="PackTwin.AI">
+      <img src="/assets/logo-dark.svg" alt="BYTEDGE" class="brand-logo-img" />
+      <span class="brand-wordmark">Pack<span class="brand-edge">Twin</span><span class="brand-tld">.AI</span></span>
+    </a>
+
+    <div class="design-name-strip">
+      <span id="topbar-design-name" class="design-name">Untitled design</span>
+      <button id="rename-btn" class="ghost ghost--xs" title="Rename this design">edit</button>
+      <!-- Save sits inline with edit so the design title + rename + save form
+           one compact unit (no separate "◎ Save untitled design" button
+           floating in the centre of the topbar). -->
+      <button id="save-design-btn" class="topbar-save topbar-save--inline" title="Save (Ctrl/Cmd-S)">
+        <span class="tsv-text">Save</span>
+      </button>
+      <span id="save-state" class="save-state" aria-live="polite"></span>
+    </div>
+
+    <div class="topbar-spacer"></div>
+
+    <span id="health-dot" class="health-dot health-dot--idle" title="checking…"></span>
+    <!-- User chip: avatar-only. The email is intentionally NOT rendered;
+         the role + organisation chips set by auth-ui.js carry that context. -->
+    <div class="user-chip user-chip--avatar-only" title="Signed-in user">
+      <span class="user-avatar" id="user-avatar">M</span>
+    </div>
+  </header>
+
+  <!-- ─────────────────────────────────────────────────────────── layout ─── -->
+  <!-- 2-column now: stage rail + main canvas. Design Brief moved out of a
+       persistent right sidecar; a small condensed brief sits below each
+       stage's content, and full editing happens via the topbar / chat. -->
+  <div class="layout layout--two-col">
+
+    <!-- LEFT: Stage rail -->
+    <aside class="rail" id="rail">
+      <button id="new-case-btn" class="primary block">＋ New design</button>
+
+      <nav class="stages" id="stages">
+        <a href="#/intake"   data-stage="intake"   class="stage"><span class="stage-dot"></span><span class="stage-label">Intake</span></a>
+        <a href="#/geometry" data-stage="geometry" class="stage"><span class="stage-dot"></span><span class="stage-label">Geometry</span></a>
+        <a href="#/material" data-stage="material" class="stage"><span class="stage-dot"></span><span class="stage-label">Material</span></a>
+        <a href="#/transit"  data-stage="transit"  class="stage"><span class="stage-dot"></span><span class="stage-label">Transit</span></a>
+        <a href="#/analysis" data-stage="analysis" class="stage"><span class="stage-dot"></span><span class="stage-label">Analysis</span></a>
+        <a href="#/results"  data-stage="results"  class="stage"><span class="stage-dot"></span><span class="stage-label">Results</span></a>
+        <a href="#/report"   data-stage="report"   class="stage"><span class="stage-dot"></span><span class="stage-label">Report</span></a>
+        <a href="#/signoff"  data-stage="signoff"  class="stage"><span class="stage-dot"></span><span class="stage-label">Sign-off</span></a>
+      </nav>
+
+      <div class="rail-aux">
+        <a href="#/optimise" class="stage stage--branch"><span class="stage-dot stage-dot--branch"></span><span class="stage-label">Optimise</span></a>
+      </div>
+
+      <h4 class="rail-h">Recent</h4>
+      <ol class="thread-list" id="thread-list"></ol>
+
+      <div class="rail-foot">
+        <span id="prefs-summary" class="prefs-summary">No personalisation yet.</span>
+      </div>
+    </aside>
+
+    <!-- CENTER: Stage canvas (now full-width — no right sidecar) -->
+    <main class="canvas canvas--wide">
+      <!-- ───────────────── INTAKE — chatbot is the hero ───────────────── -->
+      <section class="stage-page" data-page="intake">
+
+        <!-- HERO: the chat is the centrepiece. The user types here first;
+             the dashboard and CTA live below. -->
+        <div class="intake-hero">
+          <header class="intake-hero__head">
+            <span class="eyebrow">PackTwin.AI · Engineering copilot</span>
+            <h1 class="intake-hero__title">What are you packaging today?</h1>
+            <p class="intake-hero__sub">Select your packaging type and upload your CAD or geometry file. I'll route the correct engineering workflow and ask only the next required question.</p>
+            <!-- Packaging type selector — upload modal opens ONLY after selection -->
+            <div class="pkg-selector" id="pkg-selector">
+              <button class="pkg-card" id="pkg-btn-bottle" data-family="bottle">
+                <span class="pkg-card__icon">◉</span>
+                <span class="pkg-card__label">Bottle</span>
+                <span class="pkg-card__desc">Rigid · PET, HDPE, PP, glass, aluminum</span>
+              </button>
+              <button class="pkg-card" id="pkg-btn-packet" data-family="packet">
+                <span class="pkg-card__icon">▭</span>
+                <span class="pkg-card__label">Flexible Packet</span>
+                <span class="pkg-card__desc">Flexible · pouches, sachets, flow-wraps</span>
+              </button>
+              <button class="pkg-card" id="pkg-btn-brush" data-family="brush">
+                <span class="pkg-card__icon">⌇</span>
+                <span class="pkg-card__label">Brush</span>
+                <span class="pkg-card__desc">Brush · blister, clamshell, backer card</span>
+              </button>
+            </div>
+            <p class="intake-hero__formats">Supported formats: STEP, STL, OBJ, GLB, DXF</p>
+          </header>
+
+          <div class="plate plate--feature chat-card chat-card--hero">
+            <div id="messages" class="messages">
+              <!-- Static placeholder so the chat area is never blank, even
+                   before JS finishes loading the case. The JS replaces this
+                   the moment newCase() returns the seeded greeting. -->
+              <div class="msg assistant" data-placeholder="true">
+                Hello — I'm your packaging engineering assistant. Tell me
+                what you're working on (a bottle, pouch, carton, can, etc.)
+                and I'll guide you through the analysis.
+              </div>
+            </div>
+            <div id="approval-gate" class="approval-gate hidden">
+              <h3>Plan ready — approve to run, or edit first.</h3>
+              <div id="plan-summary" class="plan-summary"></div>
+              <textarea id="plan-content" class="plan-editable plan-editable--hidden"
+                        spellcheck="false"
+                        placeholder="(plan will appear here — edit before approval if you want to change anything)"></textarea>
+              <p id="plan-hint" class="plan-hint plan-hint--hidden">Edits above are saved with the case before the run starts.</p>
+              <div class="approval-actions">
+                <button id="approve-btn" class="primary">Approve and run</button>
+                <button id="reject-btn" class="secondary">Edit first</button>
+              </div>
+            </div>
+            <div class="composer">
+              <input id="file-input" type="file" accept=".step,.stp,.stl,.obj,.ply,.glb,.gltf" hidden />
+              <button id="upload-btn" class="icon-btn" title="Attach geometry">↑</button>
+              <button id="mic-btn" class="icon-btn" title="Voice input">●</button>
+              <textarea id="user-input" rows="2" placeholder="e.g. 500ml HDPE oil bottle, truck + air, ISTA 2A pre-check"></textarea>
+              <button id="send-btn" class="primary">Send</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Workspace overview — at-a-glance metrics below the chat hero -->
+        <header class="page-head page-head--mini">
+          <span class="eyebrow">Workspace overview</span>
+        </header>
+        <div class="hero-dash">
+          <div class="dash-tile dash-tile--ring">
+            <svg class="ring" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="44" class="ring-track"/>
+              <circle cx="50" cy="50" r="44" class="ring-progress" id="ring-runs"/>
+            </svg>
+            <div class="ring-value" id="dash-runs">0</div>
+            <span class="dt-k">Designs</span>
+            <span class="dt-sub">analyses run</span>
+          </div>
+          <div class="dash-tile dash-tile--ring">
+            <svg class="ring" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="44" class="ring-track"/>
+              <circle cx="50" cy="50" r="44" class="ring-progress" id="ring-saved"/>
+            </svg>
+            <div class="ring-value" id="dash-saved">0</div>
+            <span class="dt-k">Saved</span>
+            <span class="dt-sub">starred designs</span>
+          </div>
+          <div class="dash-tile dash-tile--ring dash-tile--tokens">
+            <svg class="ring" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="44" class="ring-track"/>
+              <circle cx="50" cy="50" r="44" class="ring-progress" id="ring-tokens"/>
+            </svg>
+            <div class="ring-value" id="dash-tokens">0</div>
+            <span class="dt-k">Tokens</span>
+            <span class="dt-sub">1 token = 1 simulation</span>
+          </div>
+          <!-- Calculation Accuracy — improves a little after each successful run -->
+          <div class="dash-tile dash-tile--ring dash-tile--accuracy">
+            <svg class="ring" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="44" class="ring-track"/>
+              <circle cx="50" cy="50" r="44" class="ring-progress" id="ring-accuracy"/>
+            </svg>
+            <div class="ring-value" id="dash-accuracy">86%</div>
+            <span class="dt-k">Calc accuracy</span>
+            <span class="dt-sub" id="dash-accuracy-sub">improves with every run</span>
+          </div>
+        </div>
+
+        <div class="continue-cta">
+          <div class="cc-text"><strong>Next: Geometry</strong>Upload your CAD so the analysis runs on the real model.</div>
+          <button class="primary" data-goto="#/geometry">Continue to Geometry →</button>
+        </div>
+      </section>
+
+      <!-- ───────────────── GEOMETRY ───────────────── -->
+      <section class="stage-page" data-page="geometry">
+        <header class="page-head">
+          <span class="eyebrow">Stage 2 of 8</span>
+          <h1>Upload the CAD.</h1>
+          <p class="page-sub">STEP, STL, OBJ, GLB, PLY all accepted. The 3D viewer below mirrors what the analysis will run on.</p>
+        </header>
+
+        <div class="plate dropzone" id="dropzone">
+          <div class="dz-arrow">↓</div>
+          <div class="dz-title">Drag a CAD file here</div>
+          <div class="dz-sub">or <button class="ghost" id="dz-browse">browse</button></div>
+          <div class="dz-meta">.step · .stp · .stl · .obj · .ply · .glb · .gltf</div>
+          <div class="dz-help">No CAD on hand? <a href="#" id="dz-demo">Use a reference bottle (demo only)</a></div>
+        </div>
+
+        <div class="plate viewer-card hidden" id="viewer-card">
+          <div id="colorbar" class="colorbar hidden">
+            <div class="cb-title">σ / σ_max</div>
+            <canvas id="cb-canvas" width="20" height="220"></canvas>
+            <div class="cb-ticks"><span>1.0</span><span>0.75</span><span>0.5</span><span>0.25</span><span>0.0</span></div>
+          </div>
+          <div id="scene-tabs" class="scene-tabs hidden"></div>
+          <div id="viewer" class="viewer"></div>
+          <div class="viewer-overlay">
+            <span class="eyebrow">Geometry</span>
+            <div id="viewer-status">No geometry yet.</div>
+            <div id="scene-summary" class="scene-summary"></div>
+          </div>
+        </div>
+
+        <div class="continue-cta">
+          <div class="cc-text"><strong>Next: Material</strong>Confirm material properties and product inside.</div>
+          <button class="primary" data-goto="#/material">Continue to Material →</button>
+        </div>
+      </section>
+
+      <!-- ───────────────── MATERIAL ───────────────── -->
+      <section class="stage-page" data-page="material">
+        <header class="page-head">
+          <span class="eyebrow">Stage 3 of 8</span>
+          <h1>Confirm material and product.</h1>
+          <p class="page-sub">Verified material properties from the database. Anything missing is fetched on demand and cached.</p>
+        </header>
+
+        <div class="material-grid">
+          <div class="plate" id="material-card">
+            <span class="eyebrow">Bottle material</span>
+            <div id="material-body" class="empty-state">Set a material in chat first.</div>
+            <button id="add-custom-mat" class="ghost ghost--xs" style="margin-top:12px">+ Add custom material</button>
+          </div>
+          <div class="plate" id="product-card">
+            <span class="eyebrow">Product inside</span>
+            <div id="product-body" class="empty-state">Tell us what's inside.</div>
+          </div>
+        </div>
+
+        <!-- Custom material modal (optional override) -->
+        <div id="custom-mat-modal" class="modal-backdrop hidden">
+          <div class="modal">
+            <div class="modal-head">
+              <span class="eyebrow">Custom material</span>
+              <h2>Add a material we don't have data for.</h2>
+              <p>Optional. Cached locally for future runs. Defaults are PET-bottle-grade.</p>
+            </div>
+            <div class="signoff-form" style="margin-top:0">
+              <label class="field"><span class="eyebrow">Name</span>
+                <input id="cm-name" type="text" placeholder="e.g. PCR-PET 50%" /></label>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label class="field"><span class="eyebrow">Density (kg/m³)</span>
+                  <input id="cm-density" type="number" step="any" placeholder="1380" /></label>
+                <label class="field"><span class="eyebrow">Modulus (GPa)</span>
+                  <input id="cm-modulus" type="number" step="any" placeholder="2.8" /></label>
+                <label class="field"><span class="eyebrow">Yield σy (MPa)</span>
+                  <input id="cm-yield" type="number" step="any" placeholder="55" /></label>
+                <label class="field"><span class="eyebrow">Allowable σ (MPa)</span>
+                  <input id="cm-allow" type="number" step="any" placeholder="35" /></label>
+              </div>
+              <label class="field"><span class="eyebrow">Notes (optional)</span>
+                <textarea id="cm-notes" rows="2" placeholder="Anything the next reviewer should see…"></textarea></label>
+            </div>
+            <div class="modal-actions">
+              <button class="ghost" id="cm-close">Cancel</button>
+              <button class="primary" id="cm-save">Save and use</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="continue-cta">
+          <div class="cc-text"><strong>Next: Transit</strong>Declare the route, road, and stack.</div>
+          <button class="primary" data-goto="#/transit">Continue to Transit →</button>
+        </div>
+      </section>
+
+      <!-- ───────────────── TRANSIT ───────────────── -->
+      <section class="stage-page" data-page="transit">
+        <header class="page-head">
+          <span class="eyebrow">Stage 4 of 8</span>
+          <h1>Declare the route.</h1>
+          <p class="page-sub">Only modes we have telemetry for are offered. Charts below redraw live from the real CSV data as you adjust the mix.</p>
+        </header>
+
+        <div class="transit-grid">
+          <div class="plate">
+            <span class="eyebrow">Mode mix</span>
+            <div class="mode-row" id="mode-row"></div>
+            <p class="modes-help" id="modes-help"></p>
+            <span class="eyebrow eyebrow--mt">Road condition (truck)</span>
+            <div class="seg-control" id="road-control" data-name="road_condition"
+                 data-options="smooth_highway,mixed,rough_secondary,off_road"></div>
+            <span class="eyebrow eyebrow--mt">Ship route severity</span>
+            <div class="seg-control" id="ship-control" data-name="ship_severity"
+                 data-options="clean,moderate,severe"></div>
+            <span class="eyebrow eyebrow--mt">Stack</span>
+            <div class="stack-row">
+              <div class="seg-control" id="stack-orient" data-name="stacking_orientation"
+                   data-options="upright,on_side,inverted"></div>
+              <input id="stack-height" type="number" min="1" max="50" placeholder="layers" />
+            </div>
+            <label class="checkrow">
+              <input type="checkbox" id="ships-loose" />
+              <span>Bottle ships loose (no corrugated case)</span>
+            </label>
+          </div>
+          <div class="plate" id="envelope-preview">
+            <span class="eyebrow">Composite envelope</span>
+            <div id="envelope-body" class="empty-state">Pick a mode to preview.</div>
+          </div>
+        </div>
+
+        <!-- Real CSV-derived charts (replaces the bare envelope numbers) -->
+        <div class="plate transit-charts">
+          <span class="eyebrow">Truck telemetry · vibration over time</span>
+          <canvas id="chart-truck-vib" height="180"></canvas>
+          <span class="eyebrow eyebrow--mt">Truck telemetry · shock events</span>
+          <canvas id="chart-truck-shock" height="140"></canvas>
+        </div>
+
+        <div class="plate transit-charts">
+          <span class="eyebrow">Ship telemetry · roll, pitch, heave</span>
+          <canvas id="chart-ship" height="200"></canvas>
+        </div>
+
+        <!-- Transit-scene heatmap viewer. Same colorbar as Results.
+             Hidden until the analysis produces a transit scene. -->
+        <div class="plate viewer-strip viewer-strip--compact viewer-strip--single" id="transit-viewer-strip">
+          <div class="vs-head">
+            <span class="eyebrow">Stress heatmap · transit vibration</span>
+            <div class="vs-meta">FEA jet · drag to rotate</div>
+          </div>
+          <div class="vs-row">
+            <div class="vs-cell">
+              <span class="vs-label">Transit · sustained vibration</span>
+              <div id="transit-viewer-3d" class="vs-canvas"></div>
+              <canvas id="transit-2d" class="vs-2d" width="200" height="48" title="2D unwrap · transit stress"></canvas>
+              <span class="vs-sub" id="transit-vs-sub">—</span>
+            </div>
+            <div class="vs-colorbar">
+              <div class="cb-title">σ / σ_max</div>
+              <canvas id="transit-cb-canvas" width="12" height="140"></canvas>
+              <div class="cb-ticks"><span>1.0</span><span>0.75</span><span>0.5</span><span>0.25</span><span>0.0</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="continue-cta">
+          <div class="cc-text"><strong>Next: Analysis</strong>Approve the plan and run the test pipeline.</div>
+          <button class="primary" data-goto="#/analysis">Continue to Analysis →</button>
+        </div>
+      </section>
+
+      <!-- ───────────────── ANALYSIS (plan + run) ───────────────── -->
+      <section class="stage-page" data-page="analysis">
+        <header class="page-head">
+          <span class="eyebrow">Stage 5 of 8</span>
+          <h1>Approve the plan, then run.</h1>
+          <p class="page-sub">Every step labelled. Every assumption listed. Nothing runs without your sign-off.</p>
+        </header>
+
+        <div class="plate" id="analysis-plan">
+          <div class="ap-head">
+            <span class="eyebrow">Plan summary</span>
+            <button id="ap-edit-toggle" class="ghost ghost--xs" type="button">Edit summary</button>
+          </div>
+          <div id="analysis-plan-body" class="empty-state">Complete intake / geometry / material / transit first.</div>
+          <textarea id="analysis-plan-edit"
+                    class="plan-editable plan-editable--hidden"
+                    spellcheck="false"
+                    placeholder="(plan summary will appear here — your edits are saved with the case before the run starts)"></textarea>
+          <p id="ap-edit-hint" class="plan-hint plan-hint--hidden">Edits above are saved with the case before the run starts.</p>
+        </div>
+
+        <div class="page-cta">
+          <button class="primary" id="run-btn" disabled>Approve and run analysis</button>
+        </div>
+
+        <!-- Running screen — replaces the modal loader -->
+        <div class="plate running-screen hidden" id="running-screen">
+          <header class="running-head">
+            <span class="eyebrow">Running</span>
+            <h2>Analysis in progress.</h2>
+            <p class="page-sub">This usually takes 12–30 seconds.</p>
+          </header>
+          <ol id="agent-timeline" class="agent-timeline"></ol>
+        </div>
+      </section>
+
+      <!-- ───────────────── RESULTS (verdict scorecard + 3-up heatmap + findings) ─── -->
+      <section class="stage-page" data-page="results">
+        <header class="page-head">
+          <span class="eyebrow">Stage 6 of 8</span>
+          <h1>Verdict.</h1>
+        </header>
+
+        <div class="plate plate--feature scorecard" id="scorecard">
+          <div id="scorecard-body" class="empty-state">Run the analysis to see a verdict.</div>
+        </div>
+
+        <!-- Three compact mini viewers: top / bottom / side drop heatmaps.
+             Transit gets its own viewer on the Transit stage. -->
+        <div class="plate viewer-strip viewer-strip--compact">
+          <div class="vs-head">
+            <span class="eyebrow">Stress heatmap · drop orientations</span>
+            <div class="vs-meta">FEA jet · drag any panel to rotate</div>
+          </div>
+          <div class="vs-row">
+            <div class="vs-cell">
+              <span class="vs-label">Top-down drop</span>
+              <div id="mini-viewer-top" class="vs-canvas"></div>
+              <!-- <canvas id="mini-2d-top" class="vs-2d" width="200" height="48" title="2D unwrap · stress projection"></canvas> -->
+              <span class="vs-sub" id="vs-sub-top">—</span>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Bottom-down drop</span>
+              <div id="mini-viewer-bottom" class="vs-canvas"></div>
+              <!-- <canvas id="mini-2d-bottom" class="vs-2d" width="200" height="48" title="2D unwrap · stress projection"></canvas> -->
+              <span class="vs-sub" id="vs-sub-bottom">—</span>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Side drop</span>
+              <div id="mini-viewer-side" class="vs-canvas"></div>
+              <!-- <canvas id="mini-2d-side" class="vs-2d" width="200" height="48" title="2D unwrap · stress projection"></canvas> -->
+              <span class="vs-sub" id="vs-sub-side">—</span>
+            </div>
+            <!-- Vertical colorbar shared across the three -->
+            <div class="vs-colorbar">
+              <div class="cb-title">σ / σ_max</div>
+              <canvas id="vs-cb-canvas" width="12" height="140"></canvas>
+              <div class="cb-ticks"><span>1.0</span><span>0.75</span><span>0.5</span><span>0.25</span><span>0.0</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Findings + ISTA 6A toggle -->
+        <div class="plate findings-plate">
+          <div class="findings-head">
+            <span class="eyebrow">Findings · where damage is most likely</span>
+            <label class="toggle-row">
+              <input type="checkbox" id="ista6a-toggle" />
+              <span>Also run ISTA 6A (corner-drop, 460 mm)</span>
+            </label>
+          </div>
+          <div id="findings-body" class="findings-body">
+            <div class="empty-state">Findings appear once the analysis has run.</div>
+          </div>
+          <div id="ista6a-result" class="ista6a-result hidden"></div>
+        </div>
+
+        <!-- Secondary Packaging Analysis — always rendered; content varies by state -->
+        <div class="plate viewer-strip viewer-strip--compact hidden" id="secondary-pkg-section">
+          <div class="vs-head">
+            <span class="eyebrow">Secondary packaging analysis · carton stress zones</span>
+            <div class="vs-meta" id="sec-pkg-meta">—</div>
+          </div>
+          <div class="vs-row">
+            <div class="vs-cell">
+              <span class="vs-label">Top Load Compression</span>
+              <!-- Live heatmap viewer (shown when carton data loaded) -->
+              <div id="sec-carton-viewer-top" class="vs-canvas" style="display:none;min-height:200px"></div>
+              <!-- Static fallback (shown until live viewer is ready) -->
+              <img id="sec-carton-img-top" src="/assets/top.png" style="width:100%;max-width:220px;border-radius:4px;opacity:0.90" alt="Carton top-load stress zone" />
+              <span class="vs-sub" id="sec-pkg-sub-top">Base corner columns · compression zone</span>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Corner Crush</span>
+              <div id="sec-carton-viewer-corner" class="vs-canvas" style="display:none;min-height:200px"></div>
+              <img id="sec-carton-img-corner" src="/assets/bottom.png" style="width:100%;max-width:220px;border-radius:4px;opacity:0.90" alt="Carton base corner stress zone" />
+              <span class="vs-sub" id="sec-pkg-sub-bottom">Vertical corner columns · mid-height</span>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Side Wall Compression</span>
+              <div id="sec-carton-viewer-side" class="vs-canvas" style="display:none;min-height:200px"></div>
+              <img id="sec-carton-img-side" src="/assets/side.png" style="width:100%;max-width:220px;border-radius:4px;opacity:0.90" alt="Carton side panel deflection zone" />
+              <span class="vs-sub" id="sec-pkg-sub-side">Panel centre · buckling zone</span>
+            </div>
+          </div>
+          <div class="findings-body" id="sec-pkg-findings" style="margin-top:16px"></div>
+        </div>
+
+        <!-- Damage Analysis — 3-level structural review; populated by renderDamageAnalysis() -->
+        <div class="plate viewer-strip viewer-strip--compact hidden" id="damage-analysis-section"></div>
+
+        <div class="continue-cta">
+          <div class="cc-text"><strong>Next: Report</strong>Read the full engineering review and export PDF.</div>
+          <button class="primary" data-goto="#/report">Open the report →</button>
+        </div>
+
+        <!-- Accuracy / learning loop — entered after a real ISTA test runs -->
+        <div class="accuracy-panel" id="accuracy-panel" hidden>
+          <h3>Did this match the real ISTA test? <span class="cal-pill" id="acc-cal-pill"></span></h3>
+          <p>Tell the analysis what actually happened. The platform learns where it
+             was off and re-calibrates subsequent runs on this material × packaging-type pair.</p>
+          <div class="row">
+            <div>
+              <label>Actual verdict</label>
+              <select id="acc-verdict">
+                <option value="pass">Pass</option>
+                <option value="fail">Fail</option>
+                <option value="partial">Partial</option>
+              </select>
+            </div>
+            <div>
+              <label>Failure mode (optional)</label>
+              <input id="acc-mode" placeholder="e.g. cap thread shear, base puncture" />
+            </div>
+            <div>
+              <label>Drop height (m, optional)</label>
+              <input id="acc-drop" type="number" step="0.01" placeholder="0.61" />
+            </div>
+          </div>
+          <label>Notes</label>
+          <textarea id="acc-notes" rows="2" placeholder="What the lab observed, in plain words."></textarea>
+          <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+            <button class="cpg-btn cpg-btn--primary" id="acc-submit">Record actual result</button>
+          </div>
+          <div class="narrative" id="acc-narrative" hidden></div>
+        </div>
+      </section>
+
+      <!-- ───────────────── REPORT (single page, no tabs) ───────────────── -->
+      <section class="stage-page" data-page="report">
+        <header class="page-head">
+          <span class="eyebrow">Stage 7 of 8</span>
+          <h1>Engineering review.</h1>
+          <div class="report-actions">
+            <a id="pdf-link" href="#" target="_blank" class="ghost">↓ Export PDF</a>
+            <button class="secondary" data-goto="#/signoff">Sign-off →</button>
+          </div>
+        </header>
+
+        <article class="plate report" id="report-article">
+          <div class="empty-state">Run the analysis to draft the report.</div>
+        </article>
+
+        <!-- PCR substitution card (hidden until /pcr-substitution returns a result) -->
+        <article class="plate pcr-card" id="pcr-card" hidden>
+          <header class="pcr-card__head">
+            <span class="eyebrow">Sustainability lever</span>
+            <h2 id="pcr-card-title">Post-consumer recycled substitution</h2>
+            <p class="page-sub" id="pcr-card-sub">Compare the current material with its PCR analogue.</p>
+          </header>
+          <div id="pcr-card-body"></div>
+          <div class="pcr-card__actions">
+            <button id="pcr-apply" class="secondary">Re-run analysis with PCR material</button>
+            <button id="pcr-refresh" class="ghost">Recalculate</button>
+          </div>
+        </article>
+      </section>
+
+      <!-- ───────────────── SIGN-OFF (M14) ───────────────── -->
+      <section class="stage-page" data-page="signoff">
+        <header class="page-head">
+          <span class="eyebrow">Stage 8 of 8</span>
+          <h1>Sign and lock.</h1>
+          <p class="page-sub">Locks the design and writes a SHA-256 manifest. Tamper-evident.</p>
+        </header>
+
+        <!-- Mini 3D viewers showing the locked geometry + stress fields -->
+        <div class="plate viewer-strip">
+          <div class="vs-head">
+            <span class="eyebrow">Final geometry · stress at each orientation</span>
+            <div class="vs-meta">FEA jet · same heatmap that ships with the report</div>
+          </div>
+          <div class="vs-row">
+            <div class="vs-cell">
+              <span class="vs-label">Top-down</span>
+              <div id="signoff-viewer-top" class="vs-canvas"></div>
+              <canvas id="signoff-2d-top" class="vs-2d" width="240" height="60"></canvas>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Bottom-down</span>
+              <div id="signoff-viewer-bottom" class="vs-canvas"></div>
+              <canvas id="signoff-2d-bottom" class="vs-2d" width="240" height="60"></canvas>
+            </div>
+            <div class="vs-cell">
+              <span class="vs-label">Side</span>
+              <div id="signoff-viewer-side" class="vs-canvas"></div>
+              <canvas id="signoff-2d-side" class="vs-2d" width="240" height="60"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="plate signoff-plate">
+          <div id="signoff-state" class="empty-state">Run the analysis first.</div>
+          <div class="signoff-form" id="signoff-form">
+            <label class="field">
+              <span class="eyebrow">Approver name</span>
+              <input id="signoff-name" type="text" placeholder="Full name" />
+            </label>
+            <label class="field">
+              <span class="eyebrow">Notes (optional)</span>
+              <textarea id="signoff-notes" rows="3" placeholder="Any context the next reviewer should see…"></textarea>
+            </label>
+            <div class="signoff-actions">
+              <button id="signoff-btn" class="primary" disabled>Approve &amp; lock</button>
+              <button id="unlock-btn" class="ghost hidden">Unlock</button>
+            </div>
+            <div id="signoff-result" class="signoff-result hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────────────── VARIANT DETAIL (one page per alternative) ───────────────── -->
+      <section class="stage-page" data-page="variant">
+        <header class="page-head">
+          <a href="#/optimise" class="ghost ghost--xs" style="margin-bottom:8px;display:inline-block">← back to Optimise</a>
+          <h1 id="variant-title">Variant</h1>
+          <p class="page-sub" id="variant-sub">Full breakdown for this alternative — same physics, applied to its material and wall.</p>
+        </header>
+        <div class="plate plate--feature scorecard" id="variant-scorecard"></div>
+        <div class="plate viewer-strip">
+          <div class="vs-head">
+            <span class="eyebrow">Stress heatmap · this variant</span>
+          </div>
+          <div class="vs-row">
+            <div class="vs-cell"><span class="vs-label">Top</span>
+              <div id="variant-viewer-top" class="vs-canvas"></div>
+              <canvas id="variant-2d-top" class="vs-2d" width="240" height="60"></canvas></div>
+            <div class="vs-cell"><span class="vs-label">Bottom</span>
+              <div id="variant-viewer-bottom" class="vs-canvas"></div>
+              <canvas id="variant-2d-bottom" class="vs-2d" width="240" height="60"></canvas></div>
+            <div class="vs-cell"><span class="vs-label">Side</span>
+              <div id="variant-viewer-side" class="vs-canvas"></div>
+              <canvas id="variant-2d-side" class="vs-2d" width="240" height="60"></canvas></div>
+            <div class="vs-colorbar">
+              <div class="cb-title">σ/σ_max</div>
+              <canvas id="variant-cb-canvas" width="14" height="180"></canvas>
+              <div class="cb-ticks"><span>1.0</span><span>0.75</span><span>0.5</span><span>0.25</span><span>0.0</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="plate transit-charts">
+          <span class="eyebrow">Transit envelope · same route as baseline</span>
+          <canvas id="variant-chart-truck" height="180"></canvas>
+        </div>
+        <div class="plate findings-plate" id="variant-summary"></div>
+      </section>
+
+      <!-- ───────────────── OPTIMISE (branched workflow) ───────────────── -->
+      <section class="stage-page" data-page="optimise">
+        <header class="page-head">
+          <span class="eyebrow">Branch · Optimise</span>
+          <h1>Three alternatives, re-tested.</h1>
+          <!-- subtitle toggled by JS based on packaging family -->
+          <p class="page-sub" id="opt-page-sub">Pick an intent — cost, strength, or your own — and the optimiser proposes three alternatives, each re-evaluated through the same ISTA 2A pipeline.</p>
+        </header>
+
+        <!-- PCR Intelligence — bottle flow only. Hidden for packet cases. -->
+        <div class="pcr-intel" id="pcr-intel">
+          <div class="pcr-intel__head">
+            <span class="pcr-intel__badge">PCR Intelligence</span>
+            <h3>First alternative is always a post-consumer recycled swap</h3>
+          </div>
+          <p>Each optimisation run pins the first variant to the PCR analogue of
+             your baseline material (PET → PCR-PET, HDPE → PCR-HDPE, and so on).
+             Mass and cost are recomputed against the recycled grade's density;
+             the live carbon delta and recycled-content percentage appear inline
+             once the run completes.</p>
+          <div class="pcr-intel__metrics" id="pcr-intel-metrics" hidden></div>
+        </div>
+
+        <div class="plate opt-card">
+          <div id="opt-messages" class="opt-messages"></div>
+
+          <!-- Bottle intent chips (shown for bottle cases) -->
+          <div class="opt-intents" id="opt-intents-bottle">
+            <button class="chip" data-intent="reduce_cost">Reduce material cost</button>
+            <button class="chip" data-intent="increase_strength">Increase strength</button>
+            <button class="chip" data-intent="other">Something else</button>
+          </div>
+
+          <!-- Packet intent chips (shown for packet cases) -->
+          <div class="opt-intents" id="opt-intents-packet" hidden>
+            <button class="chip" data-pkt-intent="reduce_cost">Reduce cost</button>
+            <button class="chip" data-pkt-intent="improve_survivability">Improve transit survivability</button>
+            <button class="chip" data-pkt-intent="improve_shelf_life">Improve shelf life</button>
+            <button class="chip" data-pkt-intent="other">Something else</button>
+          </div>
+
+          <!-- Brush intent chips (shown for brush cases) -->
+          <div class="opt-intents" id="opt-intents-brush" hidden>
+            <button class="chip" data-brush-intent="reduce_cost">Reduce cost</button>
+            <button class="chip" data-brush-intent="improve_survivability">Improve transit survivability</button>
+            <button class="chip" data-brush-intent="improve_sustainability">Improve sustainability</button>
+            <button class="chip" data-brush-intent="other">Something else</button>
+          </div>
+
+          <div class="opt-composer">
+            <input id="opt-input" type="text" placeholder="Tell the optimiser what to focus on…" />
+            <button id="opt-send" class="primary">Send</button>
+          </div>
+          <div id="opt-dashboard" class="opt-dashboard hidden">
+            <span class="eyebrow">Comparison ledger</span>
+            <div id="opt-dashboard-body"></div>
+          </div>
+        </div>
+
+        <!-- Per-variant heatmap comparison: bottle flow only.
+             Hidden for packet cases (no ISTA 2A stress heatmaps). -->
+        <div class="plate" id="opt-compare-plate" hidden>
+          <span class="eyebrow">Heatmap comparison · same drop, each variant</span>
+          <div class="opt-compare-controls">
+            <span class="eyebrow">Scenario</span>
+            <div class="seg-control" id="opt-compare-scenario"
+                 data-options="drop_top,drop_bottom,drop_side,transit"></div>
+          </div>
+          <div class="opt-compare-row" id="opt-compare-row"></div>
+        </div>
+      </section>
+    </main>
+
+  </div>
+
+  <!-- Brief bar removed per spec; brief lives in the topbar pill + sidebar.
+       Hidden anchor for the case-id pill so existing code paths still work. -->
+  <span id="case-id-pill" class="case-pill" style="display:none">no case</span>
+  <button id="save-btn" style="display:none"></button>
+
+  <!-- Right-margin signature hairline -->
+  <div class="margin-rule" aria-hidden="true"></div>
+
+  <!-- Geometry upload modal — appears after the geometry chat question is asked.
+       Blocks forward progress until the user uploads OR chooses to skip with
+       a clear "no CAD available" acknowledgement. -->
+  <div id="geom-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="eyebrow">Geometry · required</span>
+        <h2>Please upload your CAD file to continue.</h2>
+        <p>The analysis runs on your actual mesh — there's no realistic substitute. STEP, STL, OBJ, GLB, and PLY are accepted.</p>
+      </div>
+      <div class="dropzone" id="modal-dropzone">
+        <div class="dz-arrow">↓</div>
+        <div class="dz-title">Drag a CAD file here</div>
+        <div class="dz-sub">or <button class="ghost" id="modal-browse">browse</button></div>
+        <div class="dz-meta">.step · .stp · .stl · .obj · .ply · .glb · .gltf</div>
+      </div>
+      <p class="modal-required-note">A geometry file is required. The system can't bypass it.</p>
+      <div class="modal-actions">
+        <button class="secondary" id="geom-modal-close">Close (will re-prompt)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Processing overlay (approve+run path) =====
+       Full-screen step-through animation that keeps the user engaged while
+       ISTA 2A, ISTA 6A, transit, and reasoning all run. Each step has its
+       own row with an animated marker; the active row pulses brand-cyan. -->
+  <div id="processing" class="processing hidden" aria-live="polite">
+    <div class="processing-card processing-card--verb">
+      <div class="processing-head">
+        <span class="eyebrow">Running analysis</span>
+        <h2 id="processing-title">Working on it</h2>
+      </div>
+      <!-- Verb-cycling loader: a randomised stream of "what's happening
+           right now" lines so the wait never feels static or skips. -->
+      <div class="processing-verb-stage">
+        <div class="pv-orbit">
+          <span class="pv-dot pv-dot--a"></span>
+          <span class="pv-dot pv-dot--b"></span>
+          <span class="pv-dot pv-dot--c"></span>
+        </div>
+        <div class="pv-text">
+          <div class="pv-verb"   id="pv-verb">Calculating</div>
+          <div class="pv-detail" id="pv-detail">drop energy at 24 in for ISTA 2A</div>
+        </div>
+      </div>
+      <div class="processing-progress"><div id="processing-bar" class="pp-bar"></div></div>
+      <div class="processing-foot" id="processing-foot">Estimated 12 – 30 seconds</div>
+    </div>
+  </div>
+
+  <!-- Feedback toast -->
+  <div id="feedback-toast" class="feedback-toast hidden">
+    <div class="fb-title">How was this output?</div>
+    <div class="fb-row">
+      <button data-rating="1">good</button>
+      <button data-rating="-1">needs work</button>
+      <input id="fb-notes" placeholder="Optional notes…" />
+      <button id="fb-send" class="ghost">send</button>
+      <button id="fb-close" class="icon-btn">×</button>
+    </div>
+  </div>
+
+  <!-- Auth + token fetch wrapper. MUST run before app.js so all subsequent
+       fetches inherit Authorization headers and 402 interception. Plain
+       <script> beats module ordering: it runs at parse time. -->
+  <script src="/auth.js?v=2026-05-25-a"></script>
+
+  <script type="module" src="/app.js?v=2026-05-25-m"></script>
+
+  <!-- UI mount for login modal, token chip, admin panel, buy-credits flow,
+       and the PCR substitution card on the report stage. Loaded after
+       app.js so the topbar and stage pages already exist. -->
+  <script src="/auth-ui.js?v=2026-05-25-a" defer></script>
+</body>
+</html>
