@@ -37,6 +37,7 @@ from ..agents.bottle_flow import REQUIRED_FIELDS as BOTTLE_REQUIRED, BottleFlowA
 from ..agents.brush_flow import REQUIRED_FIELDS as BRUSH_REQUIRED, BrushFlowAgent
 from ..agents.packet_flow import REQUIRED_FIELDS as PACKET_REQUIRED, PacketFlowAgent
 from ..agents.calculation import CalculationAgent, inputs_hash
+from ..agents.design_config import build_design_config
 from ..agents.guardrail import GuardrailAgent
 from ..agents.intake import IntakeAgent
 from ..agents.ista2a import Ista2AAgent
@@ -112,6 +113,14 @@ class Orchestrator:
         self.ista2a = Ista2AAgent()
         self.ista6a = Ista6AAgent()      # Amazon-style corner drop, always run
         self.learning = LearningAgent()
+
+    @staticmethod
+    def _consistency_snapshot_keys():
+        """Class-level contract: the modules whose design params are compared
+        against the canonical DesignConfig in execute_approved_plan's
+        cross-module consistency snapshot. Keep in lock-step with the snapshot
+        dict built there."""
+        return ("design_config", "deterministic", "ista2a", "ista6a", "report")
 
     # ------------------------------------------------------------------ chat
 
@@ -918,6 +927,13 @@ class Orchestrator:
                     summary=f"Dominant risks: {', '.join(transit_env.dominant_risks)}.")
         _pace()
 
+        # --- Canonical design configuration (built ONCE, single source of truth) ---
+        # Threaded conceptually to every downstream module; the cross-module
+        # consistency snapshot at the end of this method compares each module's
+        # design params against this canonical record. drop_height_m comes from
+        # the freshly-built transit envelope so it is available here.
+        design_cfg = build_design_config(s, drop_height_m=transit_env.drop_height_m)
+
         # --- Deterministic calculations ---
         calcs = []
         # Drop energy needs an estimated mass. Prefer gross_weight_g if collected,
@@ -1015,34 +1031,9 @@ class Orchestrator:
                     confidence="approximate", summary="Surrogate risk map ready (labeled approximate).")
         _pace()
 
-        # --- Draft report ---
-        emit_status(case.case_id, stage="executing", active_agent="report", action="draft",
-                    summary="Drafting engineering review…")
-        report = self.report.draft(
-            case_summary=case.case_summary or {},
-            material=material,
-            geometry=geometry,
-            transit=transit_env,
-            calcs=cleaned_calcs,
-            risk_map=risk_map,
-            ista2a=snapshot.get("ista2a"),
-        )
-        text_check = self.guardrail.review_text(report.body_markdown)
-        if not text_check.ok:
-            log_event(db, case_id=case.case_id, actor="guardrail", action="block_report",
-                      payload=text_check.__dict__)
-            report.body_markdown += "\n\n> ⚠️ Guardrail flagged claims removed: " + "; ".join(text_check.blocks)
-        snapshot["report"] = report.model_dump()
-        db.add(AnalysisResult(
-            case_id=case.case_id,
-            method_type="report_draft",
-            inputs_hash=inputs_hash(case.case_summary or {}),
-            outputs_json=report.model_dump(),
-            confidence=report.overall_confidence,
-        ))
-        emit_status(case.case_id, stage="executing", active_agent="report", action="draft_done",
-                    confidence=report.overall_confidence, summary="Draft report ready.")
-        _pace()
+        # NOTE: the report draft is intentionally produced AFTER the ISTA 2A/6A
+        # evaluations below, so the report can render the ISTA 6A corner-drop
+        # verdict (Task F3). See the "--- Draft report ---" block further down.
 
         # --- ISTA 2A specialised evaluation (mandatory for every run) ---
         # Architecture directive: "make sure to do all the tests including
@@ -1159,6 +1150,93 @@ class Orchestrator:
                 emit_status(case.case_id, stage="executing", active_agent="visualization",
                             action="heatmaps_done", confidence="approximate",
                             summary=f"4 heatmap scenes ready ({scenes['scenes'][0]['n_cells']} cells each).")
+
+            # --- Draft report (after ISTA 2A/6A so it can render the 6A verdict) ---
+            emit_status(case.case_id, stage="executing", active_agent="report", action="draft",
+                        summary="Drafting engineering review…")
+            report = self.report.draft(
+                case_summary=case.case_summary or {},
+                material=material,
+                geometry=geometry,
+                transit=transit_env,
+                calcs=cleaned_calcs,
+                risk_map=risk_map,
+                ista2a=snapshot.get("ista2a"),
+                ista6a=snapshot.get("ista6a"),
+            )
+            text_check = self.guardrail.review_text(report.body_markdown)
+            if not text_check.ok:
+                log_event(db, case_id=case.case_id, actor="guardrail", action="block_report",
+                          payload=text_check.__dict__)
+                report.body_markdown += "\n\n> ⚠️ Guardrail flagged claims removed: " + "; ".join(text_check.blocks)
+            snapshot["report"] = report.model_dump()
+            db.add(AnalysisResult(
+                case_id=case.case_id,
+                method_type="report_draft",
+                inputs_hash=inputs_hash(case.case_summary or {}),
+                outputs_json=report.model_dump(),
+                confidence=report.overall_confidence,
+            ))
+            db.commit()
+            emit_status(case.case_id, stage="executing", active_agent="report", action="draft_done",
+                        confidence=report.overall_confidence, summary="Draft report ready.")
+            _pace()
+
+            # --- Cross-module consistency snapshot + NON-FATAL gate (Task F3) ---
+            # Compare each module's design params against the canonical
+            # design_cfg. Mass is NOT silently unified: the deterministic/ISTA
+            # path uses gross_weight_g→filled_mass_kg→0.6 (approx_mass_kg /
+            # mass_kg), whereas design_cfg prioritises filled_mass_kg first.
+            # Recording both lets review_consistency surface any divergence
+            # instead of hiding it behind a behaviour change to ISTA verdicts.
+            ista2a_drop_h = (snapshot.get("ista2a") or {}).get("drop_height_m")
+            consistency_snapshot = {
+                "design_config": {
+                    "material_name": design_cfg.material_name,
+                    "board_grade_record": design_cfg.board_grade_record,
+                    "mass_kg": design_cfg.mass_kg,
+                    "drop_height_m": design_cfg.drop_height_m,
+                },
+                "deterministic": {
+                    "material_name": material.name if material else None,
+                    "mass_kg": approx_mass_kg,
+                },
+                "ista2a": {
+                    "material_name": material.name if material else None,
+                    "mass_kg": mass_kg,
+                    "drop_height_m": ista2a_drop_h,
+                },
+                "ista6a": {
+                    "material_name": material.name if material else None,
+                    "mass_kg": mass_kg,
+                },
+                "report": {
+                    "material_name": material.name if material else None,
+                    "drop_height_m": ista2a_drop_h,
+                },
+            }
+            consistency = self.guardrail.review_consistency(consistency_snapshot)
+            snapshot["consistency"] = {
+                "ok": consistency.ok,
+                "blocks": consistency.blocks,
+                "warnings": consistency.warnings,
+            }
+            if not consistency.ok:
+                # Surface + persist, but DO NOT crash the run (non-fatal gate).
+                emit_status(case.case_id, stage="executing", active_agent="guardrail",
+                            action="consistency_check",
+                            summary="Cross-module mismatch: " + "; ".join(consistency.blocks))
+                log_event(db, case_id=case.case_id, actor="guardrail", action="consistency_check",
+                          payload={"blocks": consistency.blocks})
+                db.add(AnalysisResult(
+                    case_id=case.case_id,
+                    method_type="consistency_check",
+                    inputs_hash=inputs_hash({"keys": list(self._consistency_snapshot_keys())}),
+                    outputs_json={"blocks": consistency.blocks},
+                    confidence="insufficient_data",
+                ))
+                db.commit()
+            _pace()
 
         # --- Reasoning self-check (Gemini 3 Pro) ---
         emit_status(case.case_id, stage="executing", active_agent="reasoning",

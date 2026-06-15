@@ -60,3 +60,9 @@ def test_review_consistency_empty_and_no_canonical_are_safe():
     assert g.review_consistency({}).ok is True
     # No design_config => nothing to compare against => ok.
     assert g.review_consistency({"ista2a": {"material_name": "PET"}}).ok is True
+
+
+def test_snapshot_collects_all_modules():
+    from backend.orchestrator.orchestrator import Orchestrator
+    keys = Orchestrator._consistency_snapshot_keys()   # class-level contract
+    assert {"design_config", "deterministic", "ista2a", "ista6a", "report"} <= set(keys)

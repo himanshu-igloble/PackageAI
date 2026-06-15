@@ -32,6 +32,7 @@ class ReportAgent:
         calcs: Iterable[CalculationOutput] | None,
         risk_map: SurrogateRiskMap | None,
         ista2a: dict | None = None,
+        ista6a: dict | None = None,
     ) -> ReportDraft:
         title = (
             f"Draft Engineering Review — {case_summary.get('packaging_type', 'package').title()} "
@@ -141,6 +142,26 @@ class ReportAgent:
             body.append(f"  - Rationale: {t.get('rationale')}")
             for n in ista2a.get("notes", []):
                 body.append(f"  - *Note:* {n}")
+            body.append("")
+
+        # ---- ISTA 6A verdict (Amazon-style corner drop, when applicable) ----
+        if ista6a:
+            v = (ista6a.get("overall_verdict") or "").upper()
+            badge = "🟢" if v == "PASS" else ("🔴" if v == "FAIL" else "⚪")
+            body.append("## ISTA 6A — Amazon-Style Corner-Drop Verdict\n")
+            body.append(
+                f"- Drop height: **{_fmt(ista6a.get('drop_height_m'))} m**  "
+                f"·  Impact pressure: **{_fmt(ista6a.get('impact_pressure_mpa'))} MPa**  "
+                f"·  Allowable: **{_fmt(ista6a.get('allowable_mpa'))} MPa**  "
+                f"·  SF: **{_fmt(ista6a.get('safety_factor'))}**"
+            )
+            body.append(f"- **Overall verdict: {badge} {v}**")
+            if ista6a.get("rationale"):
+                body.append(f"  - Rationale: {ista6a.get('rationale')}")
+            if v == "FAIL":
+                risks.append(
+                    f"ISTA 6A corner-drop FAIL (SF={ista6a.get('safety_factor')})."
+                )
             body.append("")
 
         # ---- Surrogate risk map ----
