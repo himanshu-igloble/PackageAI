@@ -39,6 +39,14 @@ FILES: dict[str, str] = {
 
 ROAD_LABELS = ("smooth_highway", "mixed", "rough_secondary", "off_road")
 
+# The CSV's road_type categories don't 1:1 match ours; map intelligently.
+ROAD_TYPE_MAP: dict[str, set[str]] = {
+    "smooth_highway":  {"motorway"},
+    "mixed":           {"rural", "motorway", "urban"},
+    "rough_secondary": {"rural", "urban"},
+    "off_road":        {"rural"},
+}
+
 
 # ─────────────────────────────────────────────────────────── lazy CSV loader
 
@@ -120,14 +128,7 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
     from the `acceleration_ms2` column plus shock + roughness summaries.
     """
     df = _load("truck")
-    # The CSV's road_type categories don't 1:1 match ours; map intelligently.
-    rtm = {
-        "smooth_highway":  {"motorway"},
-        "mixed":           {"rural", "motorway", "urban"},
-        "rough_secondary": {"rural", "urban"},
-        "off_road":        {"rural"},
-    }
-    env = _summarise_road_df(df, rtm.get(road, rtm["mixed"]))
+    env = _summarise_road_df(df, ROAD_TYPE_MAP.get(road, ROAD_TYPE_MAP["mixed"]))
     env.update(mode="truck", road=road, source_file=FILES["truck"])
     return env
 
@@ -135,13 +136,7 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
 def pickup_envelope(road: str = "mixed") -> dict[str, Any]:
     """Pickup-truck vibration/shock envelope. Same telemetry schema as truck."""
     df = _load("pickup")
-    rtm = {
-        "smooth_highway":  {"motorway"},
-        "mixed":           {"rural", "motorway", "urban"},
-        "rough_secondary": {"rural", "urban"},
-        "off_road":        {"rural"},
-    }
-    env = _summarise_road_df(df, rtm.get(road, rtm["mixed"]))
+    env = _summarise_road_df(df, ROAD_TYPE_MAP.get(road, ROAD_TYPE_MAP["mixed"]))
     env.update(mode="pickup", road=road, source_file=FILES["pickup"])
     return env
 
