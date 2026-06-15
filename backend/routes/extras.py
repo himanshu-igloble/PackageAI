@@ -961,6 +961,8 @@ class TransitPreviewBody(BaseModel):
     mode_mix: dict[str, float] = Field(default_factory=dict)
     road: str = "mixed"
     ship_severity: str = "moderate"
+    durations_min: Optional[dict[str, float]] = None
+    manual_drop_height_m: Optional[float] = None
 
 
 @router.post("/transit/preview")
@@ -975,6 +977,8 @@ def transit_preview(body: TransitPreviewBody):
         mode_mix=body.mode_mix or {"truck": 1.0},
         road=body.road,
         ship_severity=body.ship_severity,
+        durations_min=body.durations_min,
+        manual_drop_height_m=body.manual_drop_height_m,
     )
 
 

@@ -897,6 +897,8 @@ class Orchestrator:
                     summary=f"Building transit envelope from real CSV data ({','.join(modes)})…")
         transit_env: TransitEnvelope = self.transit.build(
             mode_mix, road=road, ship_severity=ship_sev,
+            durations_min=s.get("transit_durations_min"),
+            manual_drop_height_m=s.get("manual_drop_height_m"),
         )
         snapshot["transit"] = transit_env.model_dump()
         db.add(TransitProfile(

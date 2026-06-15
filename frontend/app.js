@@ -1858,6 +1858,8 @@ const transitState = {
   stacking_orientation: "upright",
   stack_height: 4,
   ships_loose: false,
+  durations_min: {},
+  manual_drop_height_m: 1.0,
 };
 async function renderTransitStage() {
   // Modes split into two tiers: `dataBacked` have real CSV telemetry (truck,
@@ -1896,6 +1898,8 @@ async function renderTransitStage() {
       const m = line.dataset.mode;
       transitState.mode_mix[m] = parseInt(e.target.value, 10);
       line.querySelector(".mode-pct").textContent = transitState.mode_mix[m] + "%";
+      const dropRow = $("manual-drop-row");
+      if (dropRow) dropRow.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
       previewEnvelope();
       pushTransitToBrief();
     });
@@ -1926,7 +1930,30 @@ async function renderTransitStage() {
     transitState.ships_loose = e.target.checked;
     pushTransitToBrief();
   };
+  // Duration presets + manual drop-height controls
+  ["transit-truck-dur", "transit-other-dur", "transit-drop-h"].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.onchange = () => { previewEnvelope(); pushTransitToBrief(); };
+  });
+  const dropRow = $("manual-drop-row");
+  if (dropRow) dropRow.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
   previewEnvelope();
+}
+
+// Read duration presets + manual drop height from the Transit controls.
+function _transitDurationsAndDrop() {
+  const truckDurEl = document.getElementById("transit-truck-dur");
+  const otherDurEl = document.getElementById("transit-other-dur");
+  const dropHEl = document.getElementById("transit-drop-h");
+  const truckDur = truckDurEl ? Number(truckDurEl.value) : 480;
+  const otherHrs = otherDurEl ? Number(otherDurEl.value || 0) : 0;
+  const durations_min = {
+    truck: truckDur, pickup: truckDur,
+    air: otherHrs * 60, rail: otherHrs * 60, ship: otherHrs * 60,
+  };
+  const manual_drop_height_m = dropHEl ? Number(dropHEl.value) : 1.0;
+  return { durations_min, manual_drop_height_m };
 }
 
 let envelopeTimer = null;
@@ -1944,9 +1971,16 @@ async function _doPreview() {
     // Use the orchestrator's transit_data via a small hand-rolled probe
     // (POSTing to /messages would re-run intake; instead read live envelope
     // via the brief PATCH which doesn't trigger analysis).
+    const { durations_min, manual_drop_height_m } = _transitDurationsAndDrop();
     const env = await http(`/transit/preview`, {
       method: "POST",
-      body: JSON.stringify({ mode_mix: norm, road: transitState.road_condition, ship_severity: transitState.ship_severity }),
+      body: JSON.stringify({
+        mode_mix: norm,
+        road: transitState.road_condition,
+        ship_severity: transitState.ship_severity,
+        durations_min,
+        manual_drop_height_m,
+      }),
     }).catch(() => null);
     const body = $("envelope-body");
     if (!env) {
@@ -1972,6 +2006,7 @@ async function pushTransitToBrief() {
     .filter(([_, v]) => v > 0).map(([k]) => k);
   const norm = Object.fromEntries(Object.entries(transitState.mode_mix)
     .filter(([_, v]) => v > 0).map(([k, v]) => [k, v / total]));
+  const { durations_min, manual_drop_height_m } = _transitDurationsAndDrop();
   await http(`/cases/${caseId}/brief`, {
     method: "PATCH",
     body: JSON.stringify({ updates: {
@@ -1982,6 +2017,8 @@ async function pushTransitToBrief() {
       stacking_orientation: transitState.stacking_orientation,
       stack_height: transitState.stack_height,
       ships_loose: transitState.ships_loose,
+      transit_durations_min: durations_min,
+      manual_drop_height_m: manual_drop_height_m,
     } }),
   });
   await refreshBrief();
