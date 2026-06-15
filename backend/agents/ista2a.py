@@ -54,6 +54,10 @@ from ..schemas import GeometrySummary, MaterialLookupResult
 
 GRAVITY = 9.80665                             # m/s²
 
+# Canonical drop/impact orientations. Single source of truth so the loops in
+# stress_field_inputs (and the per-orientation constant dicts below) can't drift.
+ORIENTATIONS = ("top", "bottom", "side", "corner")
+
 # ISTA 2A drop heights (m) by package weight class — paraphrased from public
 # summaries. The real standard sells the procedure document; these are
 # representative.
@@ -259,8 +263,10 @@ class Ista2AAgent:
             "sigma_local_mpa": sigma_local_mpa,
         }
 
-    def stress_field_inputs(self, *, mass_kg, drop_height_m, material):
-        """Per-orientation local stress + yield utilisation for the heatmap.
+    def stress_field_inputs(
+        self, *, mass_kg: float, drop_height_m: float, material,
+    ) -> dict[str, dict]:
+        """Per-orientation local stress + yield utilization for the heatmap.
 
         Reuses the same impulse mechanics as the ISTA-2A drop verdict (via
         `_sigma_local_for_orientation`) so the heatmap and the verdict agree.
@@ -269,7 +275,7 @@ class Ista2AAgent:
         sy = float((material.get("yield_strength_mpa") if isinstance(material, dict)
                     else getattr(material, "yield_strength_mpa", None)) or FALLBACK_YIELD_MPA)
         out = {}
-        for orient in ("top", "bottom", "side", "corner"):
+        for orient in ORIENTATIONS:
             m = self._sigma_local_for_orientation(
                 orientation=orient, mass_kg=mass_kg, drop_height_m=drop_height_m,
             )
@@ -278,7 +284,7 @@ class Ista2AAgent:
                 "sigma_local_mpa": sigma_local_mpa,
                 "sigma_yield_mpa": sy,
                 "kt": m["kt"],
-                "utilisation": sigma_local_mpa / sy if sy else 0.0,
+                "utilization": sigma_local_mpa / sy if sy else 0.0,
             }
         return out
 
