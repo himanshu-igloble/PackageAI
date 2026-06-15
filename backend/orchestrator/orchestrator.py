@@ -948,6 +948,9 @@ class Orchestrator:
                     applied_load_n=transit_env.compression_load_n,
                     allowable_stress_mpa=material.allowable_stress_mpa,
                     load_bearing_area_mm2=area_mm2,
+                    # Provenance (Task D3): record WHICH board grade drove the
+                    # compression result when a secondary carton is in play.
+                    board_grade=s.get("carton_board_grade"),
                 ))
             except Exception:
                 pass

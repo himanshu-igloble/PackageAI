@@ -115,13 +115,22 @@ class PCRAgent:
         polymer volume of the part (wall volume, not fill volume); if not
         available the function still returns the per-kg comparison with mass
         fields filled in for a 1 g reference part."""
+        canonical_baseline = _canonicalise(baseline_material_name)
         baseline = (
             db.query(MaterialRecord)
-            .filter(MaterialRecord.name.ilike(_canonicalise(baseline_material_name)))
+            .filter(MaterialRecord.name.ilike(canonical_baseline))
             .first()
         )
         if not baseline:
             return None
+
+        # --- Provenance (Task D3) -----------------------------------------
+        # Record the exact MaterialRecord that drove the lookup, and — when the
+        # baseline is a corrugated/flute board — the resolved virgin board grade
+        # (via the single flute resolver), so an auditor can detect a flute
+        # substitution. canonical_flute_name returns None for non-board grades.
+        baseline_record_used = baseline.name
+        board_grade_used = canonical_flute_name(baseline.name)
         candidate = self.find_substitute(db, baseline_material_name=baseline.name)
         if not candidate:
             return None
@@ -207,4 +216,6 @@ class PCRAgent:
             annual_units=annual_units,
             mechanical_delta=mechanical_delta,
             caveats=caveats,
+            baseline_record_used=baseline_record_used,
+            board_grade_used=board_grade_used,
         )
