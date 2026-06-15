@@ -56,7 +56,7 @@ class TransitAgent:
         return TransitEnvelope(
             mode_mix=env["mode_mix"],
             vibration_g_rms=env["g_rms"],
-            vibration_duration_min=env.get("vibration_duration_min", 60.0),
+            vibration_duration_min=env.get("vibration_duration_min", td._FALLBACK_DURATION_MIN),
             drop_height_m=env["drop_height_m"],
             compression_load_n=env["compression_load_n"],
             handling_fraction=env["handling_fraction"],

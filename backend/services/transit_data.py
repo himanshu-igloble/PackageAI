@@ -41,7 +41,7 @@ ROAD_LABELS = ("smooth_highway", "mixed", "rough_secondary", "off_road")
 
 # Default per-mode vibration-exposure durations (minutes). Used when the caller
 # does not supply an explicit duration for a mode in the mix.
-_DEFAULT_DURATION_MIN = {
+_DEFAULT_DURATION_MIN: dict[str, float] = {
     "truck": 480.0,        # 8 h
     "pickup": 120.0,       # 2 h
     "ship": 7 * 24 * 60.0, # 7 days
@@ -49,6 +49,10 @@ _DEFAULT_DURATION_MIN = {
     "rail": 24 * 60.0,     # 24 h
     "manual_handling": 5.0,
 }
+
+# Fallback vibration-exposure duration (minutes) when a mode has no default and
+# the caller supplies none.
+_FALLBACK_DURATION_MIN: float = 60.0
 
 # The CSV's road_type categories don't 1:1 match ours; map intelligently.
 ROAD_TYPE_MAP: dict[str, set[str]] = {
@@ -362,8 +366,12 @@ def blended_envelope(
     """Weight-blend per-mode envelopes by the user-supplied mode mix.
 
     `mode_mix` is e.g. {"truck": 0.5, "ship": 0.3, "air": 0.2}. Weights are
-    re-normalised. Returned envelope carries:
+    re-normalised. `durations_min` optionally overrides the per-mode default
+    vibration-exposure minutes (`_DEFAULT_DURATION_MIN`); unspecified modes use
+    their default. Returned envelope carries:
         g_rms          composite, weighted
+        vibration_duration_min  composite weighted exposure minutes (falls back
+                       to the default of the fallback mode when the mix is empty)
         drop_height_m  worst-case across modes (manual handling dominates)
         compression_load_n  derived from g + duration heuristics
         sources        list of {mode, file, n_rows} for citation
@@ -398,8 +406,17 @@ def blended_envelope(
     durations_min = durations_min or {}
     vib_minutes = 0.0
     for mode, w in norm.items():
-        default = _DEFAULT_DURATION_MIN.get(mode, 60.0)
+        default = _DEFAULT_DURATION_MIN.get(mode, _FALLBACK_DURATION_MIN)
         vib_minutes += w * float(durations_min.get(mode, default))
+    if not norm:
+        # No weighted modes: `parts` fell back to a single mode (truck). Mirror
+        # that fallback so the duration reflects the mode actually summarised,
+        # rather than collapsing to 0.0.
+        fallback_mode = parts[0][0]
+        vib_minutes = durations_min.get(
+            fallback_mode,
+            _DEFAULT_DURATION_MIN.get(fallback_mode, _FALLBACK_DURATION_MIN),
+        )
 
     g_rms = sum(w * env.get("g_rms", 0.0) for _, w, env in parts)
     drop_h = max(env.get("drop_height_m", 0.0) for _, _, env in parts) or 0.61

@@ -32,3 +32,9 @@ def test_transit_agent_carries_duration():
     agent = TransitAgent()
     te = agent.build({"truck": 1.0}, durations_min={"truck": 240})
     assert te.vibration_duration_min == 240
+
+
+def test_empty_mode_mix_duration_matches_fallback():
+    env = td.blended_envelope(mode_mix={})
+    # falls back to truck; duration should be truck's default, not 0
+    assert env["vibration_duration_min"] == td._DEFAULT_DURATION_MIN["truck"]
