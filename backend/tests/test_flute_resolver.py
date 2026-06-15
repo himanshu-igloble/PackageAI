@@ -22,3 +22,23 @@ def test_three_flute_grades_exist_with_distinct_properties():
     ect_values = {m["ect_kn_m"] for m in (e, b, c)}
     assert len(ect_values) == 3
     assert e["ect_kn_m"] < b["ect_kn_m"] < c["ect_kn_m"]         # E < B < C stiffness
+
+
+from backend.agents.flute_resolver import resolve_flute, FluteSpec
+
+
+def test_resolver_distinguishes_e_b_c():
+    assert resolve_flute("E-flute").record_name == "Corrugated E-flute"
+    assert resolve_flute("b flute").record_name == "Corrugated B-flute"
+    assert resolve_flute("3-ply C-Flute").record_name == "Corrugated C-flute"
+
+
+def test_resolver_caliper_matches_record():
+    assert resolve_flute("E-flute").caliper_mm == 1.5
+    assert resolve_flute("C-flute").caliper_mm == 4.0
+
+
+def test_unknown_flute_falls_back_with_flag():
+    spec = resolve_flute("mystery board")
+    assert spec.record_name == "Corrugated B-flute"
+    assert spec.is_fallback is True       # never silently pretend it was exact

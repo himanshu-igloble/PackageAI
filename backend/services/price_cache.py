@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from ..agents.flute_resolver import resolve_flute
 from ..config import PROJECT_ROOT, settings
 from ..llm.gemini_client import get_gemini
 
@@ -75,7 +76,6 @@ NAME_ALIASES: dict[str, str] = {
     "tin":                                 "Tinplate",
     "tinplate":                            "Tinplate",
     "steel":                               "Steel",
-    "corrugated":                          "Corrugated B-flute",
     "cardboard":                           "Corrugated B-flute",
     "kraft":                               "Kraft Paperboard",
     "petg":                                "PETG",
@@ -96,7 +96,12 @@ def _canonical(name: str) -> str:
         return ""
     if name in LOCAL_PRICES_USD_PER_KG:
         return name
-    return NAME_ALIASES.get(name.strip().lower(), name.strip())
+    lower = name.strip().lower()
+    # Flute/corrugated grades resolve via the single flute resolver so that
+    # E/C-flute keep their own records instead of collapsing to B-flute.
+    if "flute" in lower or "corrugat" in lower:
+        return resolve_flute(name).record_name
+    return NAME_ALIASES.get(lower, name.strip())
 
 
 def _key(name: str) -> str:
