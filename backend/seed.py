@@ -59,7 +59,11 @@ def seed_materials(db: Session) -> int:
             if changed:
                 db.add(existing)
             continue
-        db.add(MaterialRecord(**item))
+        # materials.json may carry extra physical attributes (e.g. caliper_mm,
+        # ect_kn_m) that aren't mapped columns on MaterialRecord. Filter to the
+        # model's own columns so a richer JSON schema never breaks seeding.
+        cols = {c.name for c in MaterialRecord.__table__.columns}
+        db.add(MaterialRecord(**{k: v for k, v in item.items() if k in cols}))
         inserted += 1
     db.commit()
     return inserted
