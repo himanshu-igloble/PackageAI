@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from ..llm.gemini_client import get_gemini
 from ..models import MaterialRecord
 from ..schemas import GeometrySummary, MaterialLookupResult
-from .flute_resolver import resolve_flute
+from .flute_resolver import canonical_flute_name
 from .ista2a import Ista2AAgent
 from .material import MaterialAgent
 from .objective_ranking import rank_objects
@@ -56,6 +56,8 @@ MATERIAL_PRICE_PER_KG = {
     "Glass":            0.45,
     "Aluminum":         2.80,
     "Corrugated B-flute": 0.80,
+    "Corrugated E-flute": 0.80,
+    "Corrugated C-flute": 0.80,
     "Kraft Paperboard": 0.95,
     "PETG":             2.20,
 }
@@ -86,8 +88,10 @@ def _canonical_price_key(name: str) -> str | None:
     lower = name.strip().lower()
     # Flute/corrugated grades resolve via the single flute resolver so that
     # E/C-flute keep their own records instead of collapsing to B-flute.
-    if "flute" in lower or "corrugat" in lower:
-        return resolve_flute(name).record_name
+    # PCR/recycled corrugated names are excluded so they pass through unchanged.
+    _c = canonical_flute_name(name)
+    if _c:
+        return _c
     return PRICE_NAME_CANONICAL.get(lower)
 
 DEFAULT_ANNUAL_VOLUME = 1_000_000     # for ROI estimation

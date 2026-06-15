@@ -20,11 +20,11 @@ from ..db import get_db
 from ..models import Case, GeometryAsset, Message, User
 from ..orchestrator.orchestrator import Orchestrator
 from ..schemas import ApprovalDecision, CaseCreate, CaseRead, MessageIn
+from ..agents.flute_resolver import canonical_flute_name, resolve_flute
+from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..services import geometry_service
 from ..services.auth import adjust_tokens, current_user_optional
 from ..services.geometry_service import GeometryParseError
-from ..agents.flute_resolver import resolve_flute
-from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..services.identification import identify_packaging
 from ..services.visualization_service import build_scene
 
@@ -658,8 +658,8 @@ def _carton_type_to_material(carton_type: str, board_grade: str) -> str | None:
     if ct in ("rigid_box", "mono_carton", "display_carton", "master_case"):
         return "Kraft Paperboard"
     # Grade-based fallback: flute → corrugated, ply → paperboard or corrugated
-    if any(f in bg for f in ("e-flute", "b-flute", "c-flute", "e flute", "b flute", "c flute")):
-        return resolve_flute(board_grade).record_name
+    if (c := canonical_flute_name(board_grade)):
+        return c
     if "5" in bg or "3" in bg:
         return "Corrugated B-flute"
     if "ply" in bg:

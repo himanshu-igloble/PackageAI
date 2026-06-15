@@ -25,3 +25,21 @@ def resolve_flute(board_grade: str | None) -> FluteSpec:
         if any(n in g for n in needles):
             return spec
     return _FALLBACK
+
+
+def canonical_flute_name(name: str | None) -> str | None:
+    """Return the canonical virgin corrugated record name for a flute/corrugated
+    board grade, or None if `name` is not a (virgin) flute grade.
+
+    Excludes recycled/PCR names (e.g. 'PCR-Corrugated-E') so they are NOT
+    rewritten to a virgin record — callers should leave those to their own
+    alias handling / passthrough.
+    """
+    if not name:
+        return None
+    low = name.strip().lower()
+    if "pcr" in low or "recycl" in low:
+        return None
+    if "flute" in low or "corrugat" in low:
+        return resolve_flute(name).record_name
+    return None

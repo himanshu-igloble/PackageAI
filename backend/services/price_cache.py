@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from ..agents.flute_resolver import resolve_flute
+from ..agents.flute_resolver import canonical_flute_name
 from ..config import PROJECT_ROOT, settings
 from ..llm.gemini_client import get_gemini
 
@@ -51,6 +51,8 @@ LOCAL_PRICES_USD_PER_KG: dict[str, float] = {
     "Steel":            1.10,
     "Tinplate":         1.40,
     "Corrugated B-flute": 0.80,
+    "Corrugated E-flute": 0.80,
+    "Corrugated C-flute": 0.80,
     "Kraft Paperboard": 0.95,
     "rPET":             1.65,
     "Bioplastic PLA":   3.20,
@@ -99,8 +101,10 @@ def _canonical(name: str) -> str:
     lower = name.strip().lower()
     # Flute/corrugated grades resolve via the single flute resolver so that
     # E/C-flute keep their own records instead of collapsing to B-flute.
-    if "flute" in lower or "corrugat" in lower:
-        return resolve_flute(name).record_name
+    # PCR/recycled corrugated names are excluded so they pass through unchanged.
+    _c = canonical_flute_name(name)
+    if _c:
+        return _c
     return NAME_ALIASES.get(lower, name.strip())
 
 

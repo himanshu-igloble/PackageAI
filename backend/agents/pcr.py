@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..models import MaterialRecord
 from ..schemas import PCRSubstitution
-from .flute_resolver import resolve_flute
+from .flute_resolver import canonical_flute_name
 
 
 # Names whose virgin grade and PCR grade live under different canonical names.
@@ -58,8 +58,10 @@ def _canonicalise(name: str) -> str:
     lower = name.strip().lower()
     # Flute/corrugated grades resolve via the single flute resolver so that
     # E/C-flute keep their own records instead of collapsing to B-flute.
-    if "flute" in lower or "corrugat" in lower:
-        return resolve_flute(name).record_name
+    # PCR/recycled corrugated names are excluded so they pass through unchanged.
+    _c = canonical_flute_name(name)
+    if _c:
+        return _c
     return _NAME_ALIASES.get(lower, name.strip())
 
 
