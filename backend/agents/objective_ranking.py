@@ -47,7 +47,9 @@ def rank_variants(
     - Stable for unknown intents (returns the input order).
     - Variants missing the metric sort last (never silently first).
     - strict=True drops variants that are worse-than-baseline on
-      `baseline_relative_key` (e.g. cost_impact_pct > 0 for reduce_cost).
+      `baseline_relative_key`. That key MUST be a positive-is-worse delta
+      (e.g. cost_impact_pct), where a POSITIVE value means "worse than
+      baseline" regardless of the objective's sort direction.
     """
     spec = objective_metric(intent)
     if spec is None:
@@ -56,8 +58,11 @@ def rank_variants(
 
     pool = list(variants)
     if strict and baseline_relative_key:
-        worse = (lambda x: x > 0) if direction == "min" else (lambda x: x < 0)
-        pool = [v for v in pool if not worse(float(v.get(baseline_relative_key, 0) or 0))]
+        # baseline_relative_key is a relative-to-baseline delta where a POSITIVE
+        # value means "worse than baseline" (e.g. cost_impact_pct). This is
+        # independent of the objective's sort direction.
+        pool = [v for v in pool
+                if float(v.get(baseline_relative_key, 0) or 0) <= 0]
 
     missing = [v for v in pool if _value(v, key) is None]
     present = [v for v in pool if _value(v, key) is not None]
