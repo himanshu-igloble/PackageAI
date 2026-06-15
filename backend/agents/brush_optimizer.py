@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..llm.gemini_client import get_gemini
+from .objective_ranking import rank_variants
 
 
 # ---------------------------------------------------------------------------
@@ -479,27 +480,44 @@ class BrushOptimizationAgent:
         alternatives: list[BrushDesignVariant] = []
         seen: set[tuple] = set()
 
+        def _cost_for(v: BrushDesignVariant) -> float:
+            """Cost impact vs baseline. Computed HERE (not only in the
+            comparison loop below) so the objective ranker can see it before
+            truncation."""
+            a_pack   = v.fields.get("primary_pack_type") or b_pack
+            a_mat    = v.fields.get("primary_pack_material") or b_mat
+            a_carton = v.fields.get("carton") or b_carton
+            return _cost_impact_pct(b_pack, b_mat, b_carton, a_pack, a_mat, a_carton)
+
         for spec in raw_variants[:6]:
             v = self._evaluate_variant(baseline, spec)
             sig = (v.fields.get("primary_pack_type"), v.fields.get("primary_pack_material"), v.fields.get("carton"))
             if sig in seen:
                 continue
             seen.add(sig)
+            v.cost_impact_pct = _cost_for(v)
             alternatives.append(v)
-            if len(alternatives) >= 3:
-                break
 
-        # Top up with fallbacks if fewer than 3
-        if len(alternatives) < 3:
-            for spec in self._fallback_variants(baseline, intent):
-                if len(alternatives) >= 3:
-                    break
-                v = self._evaluate_variant(baseline, spec)
-                sig = (v.fields.get("primary_pack_type"), v.fields.get("primary_pack_material"), v.fields.get("carton"))
-                if sig in seen:
-                    continue
-                seen.add(sig)
-                alternatives.append(v)
+        # Top up with fallbacks (do NOT pre-truncate to 3 — rank first).
+        for spec in self._fallback_variants(baseline, intent):
+            if len(alternatives) >= 6:
+                break
+            v = self._evaluate_variant(baseline, spec)
+            sig = (v.fields.get("primary_pack_type"), v.fields.get("primary_pack_material"), v.fields.get("carton"))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            v.cost_impact_pct = _cost_for(v)
+            alternatives.append(v)
+
+        # Rank by the user's objective BEFORE truncating to 3.
+        ranked = rank_variants(
+            [a.model_dump() for a in alternatives], intent=intent,
+            baseline_relative_key="cost_impact_pct",
+            strict=(intent == "reduce_cost"),
+        )
+        by_name: dict[str, BrushDesignVariant] = {a.name: a for a in alternatives}
+        alternatives = [by_name[d["name"]] for d in ranked][:3]
 
         if not narrative:
             narrative = (

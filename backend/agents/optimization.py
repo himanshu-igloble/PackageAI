@@ -34,6 +34,7 @@ from ..models import MaterialRecord
 from ..schemas import GeometrySummary, MaterialLookupResult
 from .ista2a import Ista2AAgent
 from .material import MaterialAgent
+from .objective_ranking import rank_variants
 from .pcr import PCRAgent
 
 
@@ -491,12 +492,59 @@ class OptimizationAgent:
                          "closure_type": "snap_on"}},
         ]
 
-    def _signature(self, v: DesignVariant) -> tuple:
+    def _signature(self, v) -> tuple:
+        """De-dup signature. Accepts a DesignVariant OR a plain dict (the
+        latter for tests / pre-built candidate dicts). Dicts may not carry
+        material/fields, so fall back to a name-based signature."""
+        if isinstance(v, dict):
+            material = v.get("material")
+            mat_name = material.get("name") if isinstance(material, dict) else material
+            fields = v.get("fields") or {}
+            if mat_name is None and not fields:
+                # Bare dict (e.g. the test's {"name": ..., "cost_per_unit": ...}).
+                return ("__dict__", v.get("name"))
+            return (
+                mat_name,
+                round(float(fields.get("wall_thickness_mm") or 0), 2),
+                fields.get("closure_type"),
+            )
         return (
             (v.material.name if v.material else None),
             round(float(v.fields.get("wall_thickness_mm") or 0), 2),
             v.fields.get("closure_type"),
         )
+
+    def _finalise_slate(self, candidates, *, intent, target_passing):
+        """Keep ISTA-passing, de-duplicated variants, then rank by the user's
+        objective BEFORE truncating to target_passing.
+
+        `candidates` may be DesignVariant objects or dicts. Returns the
+        ranked, truncated slate as the SAME type that was passed in
+        (DesignVariant in -> DesignVariant out; dict in -> dict out) by
+        tracking each original object alongside its dict view.
+        """
+        seen: set = set()
+        pairs: list[tuple[dict, Any]] = []   # (dict_view, original_object)
+        for v in candidates:
+            d = v if isinstance(v, dict) else v.model_dump()
+            if not d.get("passes_ista"):
+                continue
+            sig = self._signature(v)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            pairs.append((d, v))
+
+        dict_views = [d for d, _ in pairs]
+        ranked_dicts = rank_variants(
+            dict_views, intent=intent,
+            baseline_relative_key="roi_pct", strict=False,
+        )
+        # Re-map ranked dicts back to their originals, preserving rank order.
+        # Identity match keeps duplicate names safe.
+        order = {id(d): orig for d, orig in pairs}
+        ranked = [order[id(d)] for d in ranked_dicts]
+        return ranked[:target_passing]
 
     # ── main entry: iterate until N passing variants exist ─────────────
 
@@ -525,20 +573,33 @@ class OptimizationAgent:
             "stacking_orientation": baseline_fields.get("stacking_orientation"),
             "stack_height": baseline_fields.get("stack_height"),
         }
-        passing: list[DesignVariant] = []
-        seen: set[tuple] = set()
+        candidates: list[DesignVariant] = []
         narrative = ""
 
-        # --- PCR-FIRST guarantee --------------------------------------------
-        # The first alternative is ALWAYS a post-consumer-recycled substitute
-        # of the baseline material (when one exists in the catalogue). The
-        # UI tags it with a green "PCR" badge. This is non-negotiable per
-        # the platform's sustainability stance.
+        def _passing_count() -> int:
+            """How many of the collected candidates pass ISTA (de-duplicated)."""
+            seen: set[tuple] = set()
+            n = 0
+            for c in candidates:
+                if not c.passes_ista:
+                    continue
+                sig = self._signature(c)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                n += 1
+            return n
+
+        # --- PCR-FIRST candidate --------------------------------------------
+        # A post-consumer-recycled substitute of the baseline material (when
+        # one exists in the catalogue) is added to the candidate POOL so it
+        # competes on the user's objective like any other variant. The UI
+        # still tags it with a green "PCR" badge via its _is_pcr change flag;
+        # it is no longer force-prepended to slot 1.
         pcr_variant = self._build_pcr_first(db, baseline_fields=baseline_fields,
                                             geometry=geometry, baseline=baseline)
         if pcr_variant is not None:
-            passing.append(pcr_variant)
-            seen.add(self._signature(pcr_variant))
+            candidates.append(pcr_variant)
 
         for it in range(max_iterations):
             cands, nar = self._ask_for_candidates(baseline, intent, intent_notes, it)
@@ -548,35 +609,24 @@ class OptimizationAgent:
                 v = self._evaluate_candidate(
                     db, baseline_fields=baseline_fields, geometry=geometry, alt=cand,
                 )
-                if not v.passes_ista:
-                    continue
-                sig = self._signature(v)
-                if sig in seen:
-                    continue
-                seen.add(sig)
-                passing.append(v)
-                if len(passing) >= target_passing:
-                    break
-            if len(passing) >= target_passing:
+                candidates.append(v)
+            if _passing_count() >= target_passing:
                 break
 
         # Top up with engineering-safe fallbacks if still short.
-        if len(passing) < target_passing:
+        if _passing_count() < target_passing:
             for cand in self._safe_fallback_variants(baseline):
-                if len(passing) >= target_passing:
+                if _passing_count() >= target_passing:
                     break
                 v = self._evaluate_candidate(
                     db, baseline_fields=baseline_fields, geometry=geometry, alt=cand,
                 )
-                if not v.passes_ista:
-                    continue
-                sig = self._signature(v)
-                if sig in seen:
-                    continue
-                seen.add(sig)
-                passing.append(v)
+                candidates.append(v)
 
-        alternatives = passing[:target_passing]
+        # Gate (ISTA) + de-dup + RANK by the user's objective before truncating.
+        alternatives = self._finalise_slate(
+            candidates, intent=intent, target_passing=target_passing,
+        )
         if not narrative:
             narrative = (
                 f"Three alternatives that all pass ISTA 2A while keeping the "
