@@ -438,9 +438,12 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
             }
             for r in opt_row.comparison["rows"]
         ]
-        out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+        out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+            designs, family="bottle"
+        )
     else:
-        # Packet case: map packet scores to the comparison dashboard axes.
+        # Packet case: keep packet-native scores so the dashboard shows packet
+        # axes (no bottle/ISTA vocabulary leaks onto the packet report).
         pkt_opt_row = (
             db.query(PacketOptimizationRun)
             .filter(PacketOptimizationRun.case_id == case_id)
@@ -451,17 +454,20 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
             designs = [
                 {
                     "name": r.get("name") or "Design",
-                    "cost_per_unit": r.get("cost_impact_pct") or 0,
-                    "min_safety_factor": r.get("seal_score") or 0,
-                    "mass_g": r.get("transit_score") or 0,
-                    "roi_pct": r.get("barrier_score") or 0,
-                    "passes_ista": True,
+                    "cost_impact_pct": r.get("cost_impact_pct") or 0,
+                    "seal_score": r.get("seal_score") or 0,
+                    "transit_score": r.get("transit_score") or 0,
+                    "barrier_score": r.get("barrier_score") or 0,
+                    "puncture_score": r.get("puncture_score") or 0,
                 }
                 for r in pkt_opt_row.comparison["rows"]
             ]
-            out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+            out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+                designs, family="packet"
+            )
         else:
-            # Brush case: map brush scores to the comparison dashboard axes.
+            # Brush case: keep brush-native scores so the dashboard shows brush
+            # axes (no bottle/ISTA vocabulary leaks onto the brush report).
             brush_opt_row = (
                 db.query(BrushOptimizationRun)
                 .filter(BrushOptimizationRun.case_id == case_id)
@@ -472,15 +478,17 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
                 designs = [
                     {
                         "name": r.get("name") or "Design",
-                        "cost_per_unit": r.get("cost_impact_pct") or 0,
-                        "min_safety_factor": r.get("blister_score") or 0,
-                        "mass_g": r.get("transit_score") or 0,
-                        "roi_pct": r.get("material_score") or 0,
-                        "passes_ista": True,
+                        "cost_impact_pct": r.get("cost_impact_pct") or 0,
+                        "blister_score": r.get("blister_score") or 0,
+                        "transit_score": r.get("transit_score") or 0,
+                        "material_score": r.get("material_score") or 0,
+                        "compression_score": r.get("compression_score") or 0,
                     }
                     for r in brush_opt_row.comparison["rows"]
                 ]
-                out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+                out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+                    designs, family="brush"
+                )
 
     return {"case_id": case_id, "charts": out}
 
