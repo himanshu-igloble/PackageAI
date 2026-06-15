@@ -1850,9 +1850,9 @@ function renderMaterialStage() {
 }
 
 // ===================== Transit stage (mode mix + envelope preview) =====================
-const MODES = ["truck", "ship", "air", "rail", "manual_handling"];
+const MODES = ["truck", "pickup", "ship", "air", "rail", "manual_handling"];
 const transitState = {
-  mode_mix: { truck: 50, ship: 30, air: 20, rail: 0, manual_handling: 0 },
+  mode_mix: { truck: 50, ship: 30, air: 20, pickup: 0, rail: 0, manual_handling: 0 },
   road_condition: "mixed",
   ship_severity: "moderate",
   stacking_orientation: "upright",
@@ -1860,23 +1860,33 @@ const transitState = {
   ships_loose: false,
 };
 async function renderTransitStage() {
-  // Only show modes we actually have CSV data for (truck + ship). Other modes
-  // are explained inline so the user understands why they're not selectable.
-  let available = ["truck", "ship"];
+  // Modes split into two tiers: `dataBacked` have real CSV telemetry (truck,
+  // pickup, ship); `selectable` additionally includes reference modes (air,
+  // rail, manual_handling) which are interactive but use industry estimates.
+  let dataBacked = ["truck", "pickup", "ship"];
+  let selectable = MODES.slice();
+  let reference = ["air", "rail", "manual_handling"];
   try {
     const r = await http("/transit/available-modes");
-    if (Array.isArray(r.modes) && r.modes.length) available = r.modes;
+    if (Array.isArray(r.data_backed) && r.data_backed.length) dataBacked = r.data_backed;
+    if (Array.isArray(r.selectable) && r.selectable.length) selectable = r.selectable;
+    if (Array.isArray(r.reference)) reference = r.reference;
   } catch (_) {}
+  const selectableSet = new Set(selectable);
+  const referenceSet = new Set(reference);
   set($("modes-help"), "textContent",
-    `Modes with real telemetry data available: ${available.join(", ")}. Others use industry reference values and are disabled.`);
+    `Modes with real telemetry data: ${dataBacked.join(", ")}. Reference modes (${reference.join(", ")}) are selectable but use industry estimates.`);
 
   const row = $("mode-row");
   set(row, "innerHTML", MODES.map(m => {
-    const disabled = !available.includes(m);
+    const enabled = selectableSet.has(m);
+    const isRef = referenceSet.has(m);
+    const greyed = !enabled || isRef;
+    const badge = isRef ? " (estimate)" : (!enabled ? " (no data)" : "");
     return `
-      <div class="mode-line" data-mode="${m}" ${disabled ? 'style="opacity:0.4"' : ""}>
-        <label>${m.replace(/_/g, " ")}${disabled ? " (no data)" : ""}</label>
-        <input type="range" min="0" max="100" value="${transitState.mode_mix[m] || 0}" ${disabled ? "disabled" : ""}/>
+      <div class="mode-line" data-mode="${m}" ${greyed ? 'style="opacity:0.4"' : ""}>
+        <label>${m.replace(/_/g, " ")}${badge}</label>
+        <input type="range" min="0" max="100" value="${transitState.mode_mix[m] || 0}" ${enabled ? "" : "disabled"}/>
         <span class="mode-pct">${transitState.mode_mix[m] || 0}%</span>
       </div>`;
   }).join(""));

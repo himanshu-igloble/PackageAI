@@ -1004,10 +1004,15 @@ def transit_charts(
 
 @router.get("/transit/available-modes")
 def transit_modes_available():
-    """Modes we have real CSV data for. UI uses this to grey-out modes
-    we can't actually back with data."""
+    """Transit modes for the UI. `data_backed` modes have real CSV telemetry;
+    `selectable` adds reference modes (industry estimates); `reference` lists
+    the estimate-only modes so the UI can badge them."""
     from ..services import transit_data as td
-    return {"modes": td.available_modes()}
+    return {
+        "data_backed": td.available_modes(),
+        "selectable": td.selectable_modes(),
+        "reference": list(td.REFERENCE_MODES),
+    }
 
 
 # ─────────────────────────────────────────── ISTA 6A
