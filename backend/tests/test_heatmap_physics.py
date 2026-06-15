@@ -40,3 +40,13 @@ def test_two_scenes_are_comparable_under_fixed_scale():
         material={"yield_strength_mpa": 55.0, "modulus_gpa": 2.0, "name": "PET"},
         stress_inputs={"corner": {"utilization": 0.9}})
     assert np.max(strong.per_face_stress) > np.max(weak.per_face_stress)
+
+
+from backend.services.heatmap import mckee_bct_n
+
+
+def test_mckee_bct_increases_with_ect_and_caliper():
+    # BCT = 5.87 * ECT * sqrt(perimeter_mm * caliper_mm)
+    weak = mckee_bct_n(ect_kn_m=4.0, caliper_mm=1.5, perimeter_mm=1000)   # E-flute
+    strong = mckee_bct_n(ect_kn_m=7.7, caliper_mm=4.0, perimeter_mm=1000) # C-flute
+    assert strong > weak > 0
