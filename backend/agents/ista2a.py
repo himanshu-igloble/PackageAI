@@ -472,9 +472,9 @@ class Ista2AAgent:
         cls, weight_class_drop_h = weight_class_for(mass_kg)
         # A user-specified transit drop height (from the configured transit
         # envelope) overrides the ISTA-2A weight-class lookup when provided.
-        if user_drop_height_m:
+        if user_drop_height_m is not None:
             drop_h = user_drop_height_m
-            drop_height_basis = "user_specified"
+            drop_height_basis = "user-specified transit drop height"
         else:
             drop_h = weight_class_drop_h
             drop_height_basis = f"ISTA-2A weight class {cls}"
@@ -524,7 +524,7 @@ class Ista2AAgent:
 
         notes = [
             (f"Drop height {drop_h:.3f} m (user-specified transit drop height)."
-             if user_drop_height_m else
+             if user_drop_height_m is not None else
              "Drop heights per ISTA 2A weight class (paraphrased from public summaries)."),
             "Peak-force impulse model with half-sine pulse shape; not validated FEA.",
             f"Vibration: {vibration_g_rms} g_rms, {vibration_duration_min} min (truck PSD reference).",
