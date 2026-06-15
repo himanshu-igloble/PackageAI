@@ -38,6 +38,11 @@ from .objective_ranking import rank_objects
 from .pcr import PCRAgent
 
 
+# Canonical set of optimisation intents this agent accepts. The route guard
+# in routes/extras.py imports this so there is a single source of truth.
+ALLOWED_INTENTS = frozenset({"reduce_cost", "increase_strength", "other"})
+
+
 # ----- Pricing & defaults (publicly published rough industry ranges; conservative) -----
 
 MATERIAL_PRICE_PER_KG = {
@@ -353,7 +358,7 @@ class OptimizationAgent:
         raw = gemini.intake_json(INTENT_PROMPT, payload, temperature=0.7)
         out = {
             "reply": str(raw.get("reply") or "What would you like to optimise?"),
-            "intent": raw.get("intent") if raw.get("intent") in ("reduce_cost", "increase_strength", "other") else None,
+            "intent": raw.get("intent") if raw.get("intent") in ALLOWED_INTENTS else None,
             "intent_notes": str(raw.get("intent_notes") or ""),
             "ready_to_generate": bool(raw.get("ready_to_generate", False)),
         }

@@ -30,10 +30,10 @@ from ..models import (
     OptimizationRun,
     PacketOptimizationRun,
 )
-from ..agents.brush_optimizer import BrushOptimizationAgent
+from ..agents.brush_optimizer import ALLOWED_INTENTS as _BRUSH_INTENTS, BrushOptimizationAgent
 from ..agents.material import MaterialAgent
-from ..agents.optimization import OptimizationAgent
-from ..agents.packet_optimization import PacketOptimizationAgent
+from ..agents.optimization import ALLOWED_INTENTS as _BOTTLE_INTENTS, OptimizationAgent
+from ..agents.packet_optimization import ALLOWED_INTENTS as _PACKET_INTENTS, PacketOptimizationAgent
 from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..orchestrator.status_bus import emit_status
 from ..schemas import GeometrySummary
@@ -64,10 +64,13 @@ class FamilyMismatch(HTTPException):
 _PACKET_WORDS = ("pouch", "packet", "sachet", "stickpack", "laminate")
 _BRUSH_WORDS = ("brush", "toothbrush")
 
+# Single source of truth: the allowed-intent sets live on the agents. Importing
+# them here keeps the route guard in lockstep with each optimizer — if an
+# agent's set changes, this guard automatically accepts the new intent.
 _ALLOWED_INTENTS = {
-    "bottle": {"reduce_cost", "increase_strength", "other"},
-    "packet": {"reduce_cost", "improve_survivability", "improve_shelf_life", "other"},
-    "brush": {"reduce_cost", "improve_survivability", "improve_sustainability", "other"},
+    "bottle": _BOTTLE_INTENTS,
+    "packet": _PACKET_INTENTS,
+    "brush": _BRUSH_INTENTS,
 }
 
 

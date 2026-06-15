@@ -30,6 +30,13 @@ from ..llm.gemini_client import get_gemini
 from .objective_ranking import rank_objects
 
 
+# Canonical set of optimisation intents this agent accepts. The route guard
+# in routes/extras.py imports this so there is a single source of truth.
+ALLOWED_INTENTS = frozenset(
+    {"reduce_cost", "improve_survivability", "improve_shelf_life", "other"}
+)
+
+
 # ---------------------------------------------------------------------------
 # Seal survivability score (0–10): higher = better seam integrity under load.
 # Based on published flexible-packaging failure mode data — lap seal is the
@@ -357,10 +364,9 @@ class PacketOptimizationAgent:
             "conversation_excerpt": (conversation or [])[-6:],
         }, default=str, indent=2)
         raw = gemini.intake_json(PACKET_INTENT_PROMPT, payload, temperature=0.7)
-        _ALLOWED = {"reduce_cost", "improve_survivability", "improve_shelf_life", "other"}
         return {
             "reply": str(raw.get("reply") or "What would you like to optimise in this packet design?"),
-            "intent": raw.get("intent") if raw.get("intent") in _ALLOWED else None,
+            "intent": raw.get("intent") if raw.get("intent") in ALLOWED_INTENTS else None,
             "intent_notes": str(raw.get("intent_notes") or ""),
             "ready_to_generate": bool(raw.get("ready_to_generate", False)),
         }

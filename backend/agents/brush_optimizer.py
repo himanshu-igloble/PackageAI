@@ -29,6 +29,13 @@ from ..llm.gemini_client import get_gemini
 from .objective_ranking import rank_objects
 
 
+# Canonical set of optimisation intents this agent accepts. The route guard
+# in routes/extras.py imports this so there is a single source of truth.
+ALLOWED_INTENTS = frozenset(
+    {"reduce_cost", "improve_survivability", "improve_sustainability", "other"}
+)
+
+
 # ---------------------------------------------------------------------------
 # Blister integrity score (0–10): higher = better product protection.
 # Based on pack format — rigid shells protect better than soft pouches.
@@ -320,10 +327,9 @@ class BrushOptimizationAgent:
             "conversation_excerpt": (conversation or [])[-6:],
         }, default=str, indent=2)
         raw = gemini.intake_json(BRUSH_INTENT_PROMPT, payload, temperature=0.7)
-        _ALLOWED = {"reduce_cost", "improve_survivability", "improve_sustainability", "other"}
         return {
             "reply": str(raw.get("reply") or "What would you like to optimise in this brush packaging?"),
-            "intent": raw.get("intent") if raw.get("intent") in _ALLOWED else None,
+            "intent": raw.get("intent") if raw.get("intent") in ALLOWED_INTENTS else None,
             "intent_notes": str(raw.get("intent_notes") or ""),
             "ready_to_generate": bool(raw.get("ready_to_generate", False)),
         }
