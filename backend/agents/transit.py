@@ -22,12 +22,22 @@ def _sequence_for(dominant: list[str]) -> list[str]:
         seq.append("low-pressure cycle + cargo vibration")
     if "manual_handling" in dominant:
         seq.append("free-fall drop sequence (corner/edge/face)")
+    if "rail" in dominant:
+        seq.append("ASTM D4169 DC-13 rail coupling/humping longitudinal shock")
+    if "pickup" in dominant:
+        seq.append("ISTA-2A random vibration (pickup PSD, light-payload profile)")
     seq.append("compression test (warehouse stack)")
     seq.append("post-test inspection")
+    seq = list(dict.fromkeys(seq))
     return seq
 
 
 class TransitAgent:
+    # Expose the module-level sequence builder as a method so callers/tests
+    # can request a suggested ISTA sequence from an agent instance.
+    def _sequence_for(self, dominant: list[str]) -> list[str]:
+        return _sequence_for(dominant)
+
     def build(
         self,
         mode_mix: dict[str, float],

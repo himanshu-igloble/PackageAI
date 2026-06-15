@@ -294,6 +294,33 @@ def air_envelope() -> dict[str, Any]:
     }
 
 
+def rail_envelope() -> dict[str, Any]:
+    """Rail reference envelope (no telemetry CSV yet). Rail freight is low
+    high-frequency vibration but exposes goods to longitudinal coupling/humping
+    shocks (AAR/ASTM D4169 DC-13). Conservative industry references, not measured."""
+    return {
+        "mode": "rail",
+        "g_rms": 0.30,
+        "g_p95": 0.80,
+        "coupling_shock_g": 5.0,
+        "shock_risk_p95": 0.55,
+        "handling_risk_mean": 0.40,
+        "source_file": "industry_reference",
+    }
+
+
+REFERENCE_MODES = ("air", "rail", "manual_handling")
+
+
+def selectable_modes() -> list[str]:
+    """All modes a user may select: data-backed + reference."""
+    return available_modes() + list(REFERENCE_MODES)
+
+
+def is_reference_mode(mode: str) -> bool:
+    return mode in REFERENCE_MODES
+
+
 def manual_handling_envelope() -> dict[str, Any]:
     """Hand-loading / parcel terminal envelope. Reference values."""
     return {
@@ -334,6 +361,8 @@ def blended_envelope(
         parts.append(("ship", norm["ship"], ship_envelope(ship_severity)))
     if norm.get("air"):
         parts.append(("air", norm["air"], air_envelope()))
+    if norm.get("rail"):
+        parts.append(("rail", norm["rail"], rail_envelope()))
     if norm.get("manual_handling"):
         parts.append(("manual_handling", norm["manual_handling"], manual_handling_envelope()))
 
