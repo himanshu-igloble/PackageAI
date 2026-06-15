@@ -139,6 +139,15 @@ def _normalise(x: np.ndarray) -> np.ndarray:
     return (x - lo) / (hi - lo)
 
 
+def _scale_to_yield(stress_pattern: np.ndarray, utilization: float,
+                    clamp: float = 1.5) -> np.ndarray:
+    """Map a 0..1 positional pattern onto absolute utilization, then to a
+    FIXED 0..clamp colour scale (1.0 == yield). Makes scenes comparable."""
+    pat = _normalise(stress_pattern)            # shape only, 0..1
+    absolute = pat * float(utilization)         # physical utilization per face
+    return np.clip(absolute / clamp, 0.0, 1.0)  # fixed scale, not per-scene
+
+
 @dataclass
 class StressField:
     scenario: str
@@ -172,6 +181,7 @@ def compute_field(
     material=None,
     stacking_orientation: str = "upright",
     impact_velocity_m_s: Optional[float] = None,
+    stress_inputs: Optional[dict] = None,
 ) -> StressField:
     """Compute a per-face stress field for the given scenario.
 
@@ -273,7 +283,38 @@ def compute_field(
         summary = "Unknown scenario; flat mid-range field returned."
 
     stress = stress * brittle_amp
-    stress_norm = _normalise(stress)
+
+    # Drop-scenario orientation key for the yield-referenced scaling.
+    orient_key = {"drop_top": "top", "drop_bottom": "bottom",
+                  "drop_side": "side", "drop_corner": "corner"}.get(scenario)
+
+    if stress_inputs and orient_key and orient_key in stress_inputs:
+        # Physics-grounded: scale the positional pattern by the real ISTA-2A
+        # yield utilization and map onto a FIXED 0..clamp scale so scenes are
+        # directly comparable (1.0 == yield).
+        util = float(stress_inputs[orient_key]["utilization"])
+        clamp = 1.5
+        stress_norm = _scale_to_yield(stress, util, clamp=clamp)
+        scale = {
+            "mode": "yield_referenced",
+            "units": "sigma_local/sigma_yield",
+            "max_utilization": round(util, 3),
+            "yield_at": 1.0,
+            "clamp": clamp,
+            "colormap": "fea-jet",
+            "stops": LUT_SIZE,
+        }
+    else:
+        # Backward-compatible per-scene min-max path (existing callers that
+        # don't pass stress_inputs, plus transit/unknown scenarios).
+        stress_norm = _normalise(stress)
+        scale = {
+            "min": 0.0,
+            "max": 1.0,
+            "units": "normalised stress (0=low, 1=peak)",
+            "colormap": "viridis",
+            "stops": 250,
+        }
 
     face_colors = _stress_to_color(stress_norm)
     vertex_colors = _per_vertex_from_faces(mesh, face_colors)
@@ -285,13 +326,7 @@ def compute_field(
         per_face_stress=[round(float(x), 4) for x in stress_norm],
         per_face_color=face_colors.tolist(),
         per_vertex_color=vertex_colors.tolist(),
-        scale={
-            "min": 0.0,
-            "max": 1.0,
-            "units": "normalised stress (0=low, 1=peak)",
-            "colormap": "viridis",
-            "stops": 250,
-        },
+        scale=scale,
         summary=summary,
     )
 

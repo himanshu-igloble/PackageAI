@@ -114,6 +114,35 @@ def build_heatmap_scenes(
         out["mesh_error"] = repr(exc)
         return out
 
+    # ── Physics-grounded scale inputs ───────────────────────────────────────
+    # Derive per-orientation ISTA-2A yield utilization ONCE so every drop scene
+    # is coloured against the same fixed yield-referenced scale (comparable).
+    stress_inputs = None
+    try:
+        from ..agents.ista2a import Ista2AAgent
+
+        # Drop height: prefer the configured transit envelope; else ISTA-2A
+        # default 24-in / 0.61 m.
+        drop_h = float(getattr(transit_env, "drop_height_m", None) or 0.61)
+
+        # Mass: derive from geometry volume × material density when available,
+        # otherwise fall back to a sensible 0.5 kg consumer-bottle default.
+        # (Exact mass can be refined later — this wires the physics pathway.)
+        mass_kg = 0.5
+        try:
+            vol_mm3 = getattr(geometry, "volume_mm3", None) if geometry else None
+            dens = getattr(material, "density_kg_m3", None) if material else None
+            if vol_mm3 and dens:
+                mass_kg = max((vol_mm3 / 1.0e9) * float(dens), 1e-3)
+        except Exception:
+            mass_kg = 0.5
+
+        stress_inputs = Ista2AAgent().stress_field_inputs(
+            mass_kg=mass_kg, drop_height_m=drop_h, material=material,
+        )
+    except Exception as exc:
+        out["stress_inputs_error"] = repr(exc)
+
     for sc in scenarios:
         try:
             field = hm.compute_field(
@@ -122,6 +151,7 @@ def build_heatmap_scenes(
                 transit_env=transit_env,
                 material=material,
                 stacking_orientation=stacking_orientation,
+                stress_inputs=stress_inputs,
             )
             out["scenes"].append({
                 "scenario": field.scenario,
