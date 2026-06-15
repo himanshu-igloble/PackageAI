@@ -3723,12 +3723,29 @@ function surfaceOptThinking(text) {
 function clearOptThinking() { const l = $("opt-thinking-line"); if (l) l.remove(); }
 
 // ── Bottle optimization send/generate (unchanged) ────────────────────────
+// Resolve the authoritative packaging family from the backend. The local
+// _effectiveFamily() can return null (and previously fell through to bottle);
+// the server resolves it deterministically from the case_summary. Falls back
+// to the local guess only if the lookup fails (e.g. offline).
+async function _backendFamily() {
+  if (!caseId) return _effectiveFamily();
+  try {
+    const r = await http(`/cases/${caseId}/family`);
+    return r.family || _effectiveFamily();
+  } catch (_) {
+    return _effectiveFamily();
+  }
+}
+
 async function optSend(textOverride) {
   if (!caseId) { optAppend("system", "Start a design first."); return; }
+  // Prefer the backend-resolved family so packet/brush cases never fall
+  // through to the bottle optimizer.
+  const fam = await _backendFamily();
   // Route to packet optimizer when current case is a packet
-  if (_effectiveFamily() === "packet") { await pktOptSend(textOverride); return; }
+  if (fam === "packet") { await pktOptSend(textOverride); return; }
   // Route to brush optimizer when current case is a brush
-  if (_effectiveFamily() === "brush") { await brushOptSend(textOverride); return; }
+  if (fam === "brush") { await brushOptSend(textOverride); return; }
   if (!lastSnapshot?.report) { optAppend("system", "Run the analysis first — no baseline to optimise against."); return; }
   const text = (textOverride ?? $("opt-input").value).trim();
   if (!text) return;

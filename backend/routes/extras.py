@@ -48,6 +48,55 @@ pkt_opt_agent = PacketOptimizationAgent()
 brush_opt_agent = BrushOptimizationAgent()
 
 
+# --------------------------------------------------- packaging-family routing
+# Server-side guard so packet/brush cases can never silently fall through to the
+# bottle optimizer. The family is resolved from the case_summary; each optimize
+# route asserts the case matches before dispatching to its agent.
+
+class FamilyMismatch(HTTPException):
+    def __init__(self, expected: str, actual: str):
+        super().__init__(
+            status_code=409,
+            detail=f"This optimizer is for '{expected}', but the case is '{actual}'.",
+        )
+
+
+_PACKET_WORDS = ("pouch", "packet", "sachet", "stickpack", "laminate")
+_BRUSH_WORDS = ("brush", "toothbrush")
+
+_ALLOWED_INTENTS = {
+    "bottle": {"reduce_cost", "increase_strength", "other"},
+    "packet": {"reduce_cost", "improve_survivability", "improve_shelf_life", "other"},
+    "brush": {"reduce_cost", "improve_survivability", "improve_sustainability", "other"},
+}
+
+
+def _resolve_family(case_summary: dict) -> str:
+    fam = (case_summary.get("packaging_family") or "").strip().lower()
+    if fam in ("bottle", "packet", "brush"):
+        return fam
+    ptype = (case_summary.get("packaging_type") or "").strip().lower()
+    if any(w in ptype for w in _PACKET_WORDS):
+        return "packet"
+    if any(w in ptype for w in _BRUSH_WORDS):
+        return "brush"
+    return "bottle"   # explicit default, never silent fall-through
+
+
+def _assert_family(case_summary: dict, *, expected: str) -> None:
+    actual = _resolve_family(case_summary)
+    if actual != expected:
+        raise FamilyMismatch(expected, actual)
+
+
+def _assert_intent(intent: str, *, family: str) -> None:
+    if intent not in _ALLOWED_INTENTS[family]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"intent '{intent}' not valid for {family}",
+        )
+
+
 # ------------------------------------------------------------- threads / runs
 
 @router.get("/users/{user_id}/threads")
@@ -566,6 +615,9 @@ def optimize_run(case_id: str, body: OptRunBody, db: Session = Depends(get_db)):
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="bottle")
+    _assert_intent(body.intent, family="bottle")
+
     # Material + geometry context
     s = case.case_summary or {}
     material = MaterialAgent().lookup(db, s.get("material") or "") if s.get("material") else None
@@ -654,6 +706,9 @@ def packet_optimize_run(
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="packet")
+    _assert_intent(body.intent, family="packet")
+
     s = case.case_summary or {}
     emit_status(case_id, stage=case.status, active_agent="packet_optimization",
                 action="generate_alternatives", tool="gemini-2.5-flash",
@@ -723,6 +778,9 @@ def brush_optimize_run(
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="brush")
+    _assert_intent(body.intent, family="brush")
+
     s = case.case_summary or {}
     emit_status(case_id, stage=case.status, active_agent="brush_optimization",
                 action="generate_alternatives", tool="gemini-2.5-flash",
@@ -751,6 +809,17 @@ def brush_optimize_run(
                 action="alternatives_done", confidence="estimated",
                 summary=f"{len(payload['alternatives'])} brush packaging alternatives generated.")
     return payload
+
+
+# ------------------------------------------------- packaging-family lookup
+# Authoritative family for the frontend to dispatch the correct optimizer.
+
+@router.get("/cases/{case_id}/family")
+def case_family(case_id: str, db: Session = Depends(get_db)):
+    case = db.get(Case, case_id)
+    if not case:
+        raise HTTPException(404)
+    return {"family": _resolve_family(case.case_summary or {})}
 
 
 # --------------------------------------------------------- preferences read
