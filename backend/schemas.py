@@ -137,6 +137,7 @@ class GeometrySummary(BaseModel):
 class TransitEnvelope(BaseModel):
     mode_mix: dict[str, float]
     vibration_g_rms: float
+    vibration_duration_min: float = 60.0
     drop_height_m: float
     compression_load_n: float
     handling_fraction: float
@@ -217,6 +218,13 @@ class PCRSubstitution(BaseModel):
     # Which packaging component is being compared. Defaults to bottle-shell so
     # existing bottle responses are unaffected; set explicitly for packet/brush.
     pcr_component: str = "Bottle shell"
+
+    # --- Provenance (Task D3) ---------------------------------------------
+    # Records WHICH MaterialRecord/board grade actually drove the lookup, so an
+    # auditor can detect substitution (the flute-collapse bug class). These are
+    # provenance only — they never affect the computed deltas above.
+    baseline_record_used: Optional[str] = None   # canonical MaterialRecord name resolved for the baseline
+    board_grade_used: Optional[str] = None       # resolved corrugated/flute record name, or None if not a board
 
 
 # ---------- Auth / Tokens ----------

@@ -1850,33 +1850,52 @@ function renderMaterialStage() {
 }
 
 // ===================== Transit stage (mode mix + envelope preview) =====================
-const MODES = ["truck", "ship", "air", "rail", "manual_handling"];
+const MODES = ["truck", "pickup", "ship", "air", "rail", "manual_handling"];
 const transitState = {
-  mode_mix: { truck: 50, ship: 30, air: 20, rail: 0, manual_handling: 0 },
+  mode_mix: { truck: 50, ship: 30, air: 20, pickup: 0, rail: 0, manual_handling: 0 },
   road_condition: "mixed",
   ship_severity: "moderate",
   stacking_orientation: "upright",
   stack_height: 4,
   ships_loose: false,
+  durations_min: {},
+  manual_drop_height_m: 1.0,
 };
+// Show/hide the manual-drop-height row based on whether any manual-handling
+// share is present. Single source of truth for the toggle (called from each
+// site that previously duplicated the expression).
+function syncManualDropRow() {
+  const r = document.getElementById("manual-drop-row");
+  if (r) r.hidden = !((transitState.mode_mix.manual_handling || 0) > 0);
+}
 async function renderTransitStage() {
-  // Only show modes we actually have CSV data for (truck + ship). Other modes
-  // are explained inline so the user understands why they're not selectable.
-  let available = ["truck", "ship"];
+  // Modes split into two tiers: `dataBacked` have real CSV telemetry (truck,
+  // pickup, ship); `selectable` additionally includes reference modes (air,
+  // rail, manual_handling) which are interactive but use industry estimates.
+  let dataBacked = ["truck", "pickup", "ship"];
+  let selectable = MODES.slice();
+  let reference = ["air", "rail", "manual_handling"];
   try {
     const r = await http("/transit/available-modes");
-    if (Array.isArray(r.modes) && r.modes.length) available = r.modes;
+    if (Array.isArray(r.data_backed) && r.data_backed.length) dataBacked = r.data_backed;
+    if (Array.isArray(r.selectable) && r.selectable.length) selectable = r.selectable;
+    if (Array.isArray(r.reference)) reference = r.reference;
   } catch (_) {}
+  const selectableSet = new Set(selectable);
+  const referenceSet = new Set(reference);
   set($("modes-help"), "textContent",
-    `Modes with real telemetry data available: ${available.join(", ")}. Others use industry reference values and are disabled.`);
+    `Modes with real telemetry data: ${dataBacked.join(", ")}. Reference modes (${reference.join(", ")}) are selectable but use industry estimates.`);
 
   const row = $("mode-row");
   set(row, "innerHTML", MODES.map(m => {
-    const disabled = !available.includes(m);
+    const enabled = selectableSet.has(m);
+    const isRef = referenceSet.has(m);
+    const greyed = !enabled || isRef;
+    const badge = isRef ? " (estimate)" : (!enabled ? " (no data)" : "");
     return `
-      <div class="mode-line" data-mode="${m}" ${disabled ? 'style="opacity:0.4"' : ""}>
-        <label>${m.replace(/_/g, " ")}${disabled ? " (no data)" : ""}</label>
-        <input type="range" min="0" max="100" value="${transitState.mode_mix[m] || 0}" ${disabled ? "disabled" : ""}/>
+      <div class="mode-line" data-mode="${m}" ${greyed ? 'style="opacity:0.4"' : ""}>
+        <label>${m.replace(/_/g, " ")}${badge}</label>
+        <input type="range" min="0" max="100" value="${transitState.mode_mix[m] || 0}" ${enabled ? "" : "disabled"}/>
         <span class="mode-pct">${transitState.mode_mix[m] || 0}%</span>
       </div>`;
   }).join(""));
@@ -1886,6 +1905,7 @@ async function renderTransitStage() {
       const m = line.dataset.mode;
       transitState.mode_mix[m] = parseInt(e.target.value, 10);
       line.querySelector(".mode-pct").textContent = transitState.mode_mix[m] + "%";
+      syncManualDropRow();
       previewEnvelope();
       pushTransitToBrief();
     });
@@ -1916,7 +1936,39 @@ async function renderTransitStage() {
     transitState.ships_loose = e.target.checked;
     pushTransitToBrief();
   };
+  // Duration presets + manual drop-height controls
+  ["transit-truck-dur", "transit-other-dur", "transit-drop-h"].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.onchange = () => { previewEnvelope(); pushTransitToBrief(); };
+  });
+  syncManualDropRow();
   previewEnvelope();
+}
+
+// Read duration presets + manual drop height from the Transit controls.
+function _transitDurationsAndDrop() {
+  const truckDurEl = document.getElementById("transit-truck-dur");
+  const otherDurEl = document.getElementById("transit-other-dur");
+  const dropHEl = document.getElementById("transit-drop-h");
+  const truckDur = truckDurEl ? Number(truckDurEl.value) : 480;
+  const otherHrs = otherDurEl ? Number(otherDurEl.value || 0) : 0;
+  // Truck/pickup always have a value from the truck-duration select. Only
+  // include air/rail/ship when the user actually entered a duration > 0 —
+  // otherwise OMIT them so the backend's per-mode defaults (blended_envelope
+  // only falls back when a key is ABSENT) stay in effect.
+  const durations_min = { truck: truckDur, pickup: truckDur };
+  if (otherHrs > 0) {
+    durations_min.air = otherHrs * 60;
+    durations_min.rail = otherHrs * 60;
+    durations_min.ship = otherHrs * 60;
+  }
+  const manual_drop_height_m = dropHEl ? Number(dropHEl.value) : 1.0;
+  // Mirror onto transitState so the fields stay authoritative and consistent
+  // with how the rest of transitState tracks the controls.
+  transitState.durations_min = durations_min;
+  transitState.manual_drop_height_m = manual_drop_height_m;
+  return { durations_min, manual_drop_height_m };
 }
 
 let envelopeTimer = null;
@@ -1934,9 +1986,16 @@ async function _doPreview() {
     // Use the orchestrator's transit_data via a small hand-rolled probe
     // (POSTing to /messages would re-run intake; instead read live envelope
     // via the brief PATCH which doesn't trigger analysis).
+    const { durations_min, manual_drop_height_m } = _transitDurationsAndDrop();
     const env = await http(`/transit/preview`, {
       method: "POST",
-      body: JSON.stringify({ mode_mix: norm, road: transitState.road_condition, ship_severity: transitState.ship_severity }),
+      body: JSON.stringify({
+        mode_mix: norm,
+        road: transitState.road_condition,
+        ship_severity: transitState.ship_severity,
+        durations_min,
+        manual_drop_height_m,
+      }),
     }).catch(() => null);
     const body = $("envelope-body");
     if (!env) {
@@ -1962,6 +2021,7 @@ async function pushTransitToBrief() {
     .filter(([_, v]) => v > 0).map(([k]) => k);
   const norm = Object.fromEntries(Object.entries(transitState.mode_mix)
     .filter(([_, v]) => v > 0).map(([k, v]) => [k, v / total]));
+  const { durations_min, manual_drop_height_m } = _transitDurationsAndDrop();
   await http(`/cases/${caseId}/brief`, {
     method: "PATCH",
     body: JSON.stringify({ updates: {
@@ -1972,6 +2032,8 @@ async function pushTransitToBrief() {
       stacking_orientation: transitState.stacking_orientation,
       stack_height: transitState.stack_height,
       ships_loose: transitState.ships_loose,
+      transit_durations_min: durations_min,
+      manual_drop_height_m: manual_drop_height_m,
     } }),
   });
   await refreshBrief();
@@ -3661,12 +3723,29 @@ function surfaceOptThinking(text) {
 function clearOptThinking() { const l = $("opt-thinking-line"); if (l) l.remove(); }
 
 // ── Bottle optimization send/generate (unchanged) ────────────────────────
+// Resolve the authoritative packaging family from the backend. The local
+// _effectiveFamily() can return null (and previously fell through to bottle);
+// the server resolves it deterministically from the case_summary. Falls back
+// to the local guess only if the lookup fails (e.g. offline).
+async function _backendFamily() {
+  if (!caseId) return _effectiveFamily();
+  try {
+    const r = await http(`/cases/${caseId}/family`);
+    return r.family || _effectiveFamily();
+  } catch (_) {
+    return _effectiveFamily();
+  }
+}
+
 async function optSend(textOverride) {
   if (!caseId) { optAppend("system", "Start a design first."); return; }
+  // Prefer the backend-resolved family so packet/brush cases never fall
+  // through to the bottle optimizer.
+  const fam = await _backendFamily();
   // Route to packet optimizer when current case is a packet
-  if (_effectiveFamily() === "packet") { await pktOptSend(textOverride); return; }
+  if (fam === "packet") { await pktOptSend(textOverride); return; }
   // Route to brush optimizer when current case is a brush
-  if (_effectiveFamily() === "brush") { await brushOptSend(textOverride); return; }
+  if (fam === "brush") { await brushOptSend(textOverride); return; }
   if (!lastSnapshot?.report) { optAppend("system", "Run the analysis first — no baseline to optimise against."); return; }
   const text = (textOverride ?? $("opt-input").value).trim();
   if (!text) return;

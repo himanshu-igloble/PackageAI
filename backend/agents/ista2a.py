@@ -54,6 +54,10 @@ from ..schemas import GeometrySummary, MaterialLookupResult
 
 GRAVITY = 9.80665                             # m/s²
 
+# Canonical drop/impact orientations. Single source of truth so the loops in
+# stress_field_inputs (and the per-orientation constant dicts below) can't drift.
+ORIENTATIONS = ("top", "bottom", "side", "corner")
+
 # ISTA 2A drop heights (m) by package weight class — paraphrased from public
 # summaries. The real standard sells the procedure document; these are
 # representative.
@@ -229,14 +233,16 @@ class Ista2AAgent:
 
     # ── drops ──────────────────────────────────────────────────────────────
 
-    def _drop_verdict(
-        self,
-        *,
-        orientation: str,
-        mass_kg: float,
-        drop_height_m: float,
-        material: Optional[MaterialLookupResult],
-    ) -> DropVerdict:
+    def _sigma_local_for_orientation(
+        self, *, orientation: str, mass_kg: float, drop_height_m: float,
+    ) -> dict:
+        """Peak-force impulse mechanics for one drop orientation.
+
+        Single source of truth for the σ_local calculation, shared by the
+        ISTA-2A drop verdict (`_drop_verdict`) and the heatmap inputs
+        (`stress_field_inputs`) so the two can never disagree. Returns the
+        intermediate quantities so the verdict can still build its rationale.
+        """
         v = math.sqrt(2 * GRAVITY * drop_height_m)
         delta = STOPPING_DISTANCE_M[orientation]
         kt = KT_BY_ORIENTATION[orientation]
@@ -247,6 +253,60 @@ class Ista2AAgent:
         f_peak_n = mass_kg * a_peak_m_s2
         sigma_nominal_mpa = f_peak_n / area_mm2          # N/mm² ≡ MPa
         sigma_local_mpa = sigma_nominal_mpa * kt
+        return {
+            "v": v,
+            "delta": delta,
+            "kt": kt,
+            "area_mm2": area_mm2,
+            "a_peak_m_s2": a_peak_m_s2,
+            "f_peak_n": f_peak_n,
+            "sigma_local_mpa": sigma_local_mpa,
+        }
+
+    def stress_field_inputs(
+        self, *, mass_kg: float, drop_height_m: float, material,
+    ) -> dict[str, dict]:
+        """Per-orientation local stress + yield utilization for the heatmap.
+
+        Reuses the same impulse mechanics as the ISTA-2A drop verdict (via
+        `_sigma_local_for_orientation`) so the heatmap and the verdict agree.
+        `material` may be a dict or an object with `yield_strength_mpa`.
+        """
+        sy = float((material.get("yield_strength_mpa") if isinstance(material, dict)
+                    else getattr(material, "yield_strength_mpa", None)) or FALLBACK_YIELD_MPA)
+        out = {}
+        for orient in ORIENTATIONS:
+            m = self._sigma_local_for_orientation(
+                orientation=orient, mass_kg=mass_kg, drop_height_m=drop_height_m,
+            )
+            sigma_local_mpa = m["sigma_local_mpa"]
+            out[orient] = {
+                "sigma_local_mpa": sigma_local_mpa,
+                "sigma_yield_mpa": sy,
+                "kt": m["kt"],
+                "utilization": sigma_local_mpa / sy if sy else 0.0,
+            }
+        return out
+
+    def _drop_verdict(
+        self,
+        *,
+        orientation: str,
+        mass_kg: float,
+        drop_height_m: float,
+        material: Optional[MaterialLookupResult],
+        drop_height_basis: str = "ISTA-2A weight class",
+    ) -> DropVerdict:
+        m = self._sigma_local_for_orientation(
+            orientation=orientation, mass_kg=mass_kg, drop_height_m=drop_height_m,
+        )
+        v = m["v"]
+        delta = m["delta"]
+        kt = m["kt"]
+        area_mm2 = m["area_mm2"]
+        a_peak_m_s2 = m["a_peak_m_s2"]
+        f_peak_n = m["f_peak_n"]
+        sigma_local_mpa = m["sigma_local_mpa"]
         energy_j = 0.5 * mass_kg * v * v
 
         allowable = getattr(material, "yield_strength_mpa", None) if material else None
@@ -273,6 +333,8 @@ class Ista2AAgent:
         )
 
         assumptions = [
+            Assumption("drop_height_m", round(drop_height_m, 3),
+                       f"Drop height basis: {drop_height_basis}."),
             Assumption("pulse_shape_factor", PULSE_SHAPE_FACTOR,
                        "Half-sine impulse approximation for rigid impact pulse."),
             Assumption("stopping_distance_mm", round(delta * 1000, 2),
@@ -463,13 +525,23 @@ class Ista2AAgent:
         ships_loose: bool = False,
         vibration_g_rms: float = ISTA_2A_VIBRATION_G_RMS,
         vibration_duration_min: int = ISTA_2A_VIBRATION_MIN_DEFAULT,
+        user_drop_height_m: float | None = None,
         calibration_multiplier: float = 1.0,
     ) -> Ista2AReport:
-        cls, drop_h = weight_class_for(mass_kg)
+        cls, weight_class_drop_h = weight_class_for(mass_kg)
+        # A user-specified transit drop height (from the configured transit
+        # envelope) overrides the ISTA-2A weight-class lookup when provided.
+        if user_drop_height_m is not None:
+            drop_h = user_drop_height_m
+            drop_height_basis = "user-specified transit drop height"
+        else:
+            drop_h = weight_class_drop_h
+            drop_height_basis = f"ISTA-2A weight class {cls}"
         drops = [
             self._drop_verdict(
                 orientation=o, mass_kg=mass_kg,
                 drop_height_m=drop_h, material=material,
+                drop_height_basis=drop_height_basis,
             )
             for o in ("top", "bottom", "side")
         ]
@@ -510,7 +582,9 @@ class Ista2AAgent:
         overall = "fail" if any(v == "fail" for v in verdicts) else "pass"
 
         notes = [
-            "Drop heights per ISTA 2A weight class (paraphrased from public summaries).",
+            (f"Drop height {drop_h:.3f} m (user-specified transit drop height)."
+             if user_drop_height_m is not None else
+             "Drop heights per ISTA 2A weight class (paraphrased from public summaries)."),
             "Peak-force impulse model with half-sine pulse shape; not validated FEA.",
             f"Vibration: {vibration_g_rms} g_rms, {vibration_duration_min} min (truck PSD reference).",
         ]

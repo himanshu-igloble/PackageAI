@@ -20,10 +20,11 @@ from ..db import get_db
 from ..models import Case, GeometryAsset, Message, User
 from ..orchestrator.orchestrator import Orchestrator
 from ..schemas import ApprovalDecision, CaseCreate, CaseRead, MessageIn
+from ..agents.flute_resolver import canonical_flute_name, resolve_flute
+from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..services import geometry_service
 from ..services.auth import adjust_tokens, current_user_optional
 from ..services.geometry_service import GeometryParseError
-from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..services.identification import identify_packaging
 from ..services.visualization_service import build_scene
 
@@ -650,15 +651,17 @@ def _carton_type_to_material(carton_type: str, board_grade: str) -> str | None:
     """Map a carton_type / board_grade string to a DB material name."""
     ct = carton_type.lower().replace("-", "_").replace(" ", "_")
     bg = board_grade.lower()
+    # An explicit flute grade in board_grade wins over a generic carton_type:
+    # e.g. corrugated_carton + "E-flute" must NOT collapse to B-flute.
+    if (c := canonical_flute_name(board_grade)):
+        return c
     # Corrugated formats map to Corrugated B-flute
     if ct in ("corrugated_carton", "corrugated_shipper", "tray"):
         return "Corrugated B-flute"
     # Rigid box / mono carton use paperboard
     if ct in ("rigid_box", "mono_carton", "display_carton", "master_case"):
         return "Kraft Paperboard"
-    # Grade-based fallback: flute → corrugated, ply → paperboard or corrugated
-    if any(f in bg for f in ("e-flute", "b-flute", "c-flute", "e flute", "b flute", "c flute")):
-        return "Corrugated B-flute"
+    # Grade-based fallback: ply → paperboard or corrugated
     if "5" in bg or "3" in bg:
         return "Corrugated B-flute"
     if "ply" in bg:
@@ -708,10 +711,10 @@ def _estimate_carton_volume_mm3(s: dict) -> float | None:
         return None
     surface_area_mm2 = 2.0 * (L * W + L * H + W * H)
     bg = (s.get("carton_board_grade") or "").lower()
-    if "e" in bg and "flute" in bg:
-        board_t = 3.0
-    elif any(f in bg for f in ("b flute", "c flute", "b-flute", "c-flute")):
-        board_t = 5.0
+    # Flute-worded grades use the single flute resolver's real per-flute caliper
+    # (E 1.5 / B 3.0 / C 4.0 mm). Ply-only grades keep their legacy thickness.
+    if "flute" in bg:
+        board_t = resolve_flute(s.get("carton_board_grade")).caliper_mm
     elif "5" in bg:
         board_t = 5.0
     elif "3" in bg:

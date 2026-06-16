@@ -654,6 +654,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .seg-control button.active { background: var(--ink); color: var(--paper); }
 
 .stack-row { display: flex; gap: var(--s-3); align-items: center; }
+/* Mirrors .stack-row so the transit duration / drop-height rows align with
+   their flex-laid-out siblings instead of rendering unstyled. */
+.transit-row { display: flex; gap: var(--s-3); align-items: center; }
 .stack-row input { width: 100px; padding: 7px 10px;
   border: 1px solid var(--rule); border-radius: var(--r-sm);
   font-family: var(--font-mono); font-size: 13px; color: var(--ink); background: var(--paper); }

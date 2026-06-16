@@ -22,26 +22,41 @@ def _sequence_for(dominant: list[str]) -> list[str]:
         seq.append("low-pressure cycle + cargo vibration")
     if "manual_handling" in dominant:
         seq.append("free-fall drop sequence (corner/edge/face)")
+    if "rail" in dominant:
+        seq.append("ASTM D4169 DC-13 rail coupling/humping longitudinal shock")
+    if "pickup" in dominant:
+        seq.append("ISTA-2A random vibration (pickup PSD, light-payload profile)")
     seq.append("compression test (warehouse stack)")
     seq.append("post-test inspection")
+    seq = list(dict.fromkeys(seq))
     return seq
 
 
 class TransitAgent:
+    # Expose the module-level sequence builder as a method so callers/tests
+    # can request a suggested ISTA sequence from an agent instance.
+    def _sequence_for(self, dominant: list[str]) -> list[str]:
+        return _sequence_for(dominant)
+
     def build(
         self,
         mode_mix: dict[str, float],
         *,
         road: str = "mixed",
         ship_severity: str = "moderate",
+        durations_min: dict[str, float] | None = None,
+        manual_drop_height_m: float | None = None,
     ) -> TransitEnvelope:
         env = td.blended_envelope(
             mode_mix=mode_mix, road=road, ship_severity=ship_severity,
+            durations_min=durations_min,
+            manual_drop_height_m=manual_drop_height_m,
         )
 
         return TransitEnvelope(
             mode_mix=env["mode_mix"],
             vibration_g_rms=env["g_rms"],
+            vibration_duration_min=env.get("vibration_duration_min", td._FALLBACK_DURATION_MIN),
             drop_height_m=env["drop_height_m"],
             compression_load_n=env["compression_load_n"],
             handling_fraction=env["handling_fraction"],

@@ -30,10 +30,10 @@ from ..models import (
     OptimizationRun,
     PacketOptimizationRun,
 )
-from ..agents.brush_optimizer import BrushOptimizationAgent
+from ..agents.brush_optimizer import ALLOWED_INTENTS as _BRUSH_INTENTS, BrushOptimizationAgent
 from ..agents.material import MaterialAgent
-from ..agents.optimization import OptimizationAgent
-from ..agents.packet_optimization import PacketOptimizationAgent
+from ..agents.optimization import ALLOWED_INTENTS as _BOTTLE_INTENTS, OptimizationAgent
+from ..agents.packet_optimization import ALLOWED_INTENTS as _PACKET_INTENTS, PacketOptimizationAgent
 from ..agents.secondary_packaging import SecondaryPackagingAgent
 from ..orchestrator.status_bus import emit_status
 from ..schemas import GeometrySummary
@@ -46,6 +46,58 @@ router = APIRouter()
 opt_agent = OptimizationAgent()
 pkt_opt_agent = PacketOptimizationAgent()
 brush_opt_agent = BrushOptimizationAgent()
+
+
+# --------------------------------------------------- packaging-family routing
+# Server-side guard so packet/brush cases can never silently fall through to the
+# bottle optimizer. The family is resolved from the case_summary; each optimize
+# route asserts the case matches before dispatching to its agent.
+
+class FamilyMismatch(HTTPException):
+    def __init__(self, expected: str, actual: str):
+        super().__init__(
+            status_code=409,
+            detail=f"This optimizer is for '{expected}', but the case is '{actual}'.",
+        )
+
+
+_PACKET_WORDS = ("pouch", "packet", "sachet", "stickpack", "laminate")
+_BRUSH_WORDS = ("brush", "toothbrush")
+
+# Single source of truth: the allowed-intent sets live on the agents. Importing
+# them here keeps the route guard in lockstep with each optimizer — if an
+# agent's set changes, this guard automatically accepts the new intent.
+_ALLOWED_INTENTS = {
+    "bottle": _BOTTLE_INTENTS,
+    "packet": _PACKET_INTENTS,
+    "brush": _BRUSH_INTENTS,
+}
+
+
+def _resolve_family(case_summary: dict) -> str:
+    fam = (case_summary.get("packaging_family") or "").strip().lower()
+    if fam in ("bottle", "packet", "brush"):
+        return fam
+    ptype = (case_summary.get("packaging_type") or "").strip().lower()
+    if any(w in ptype for w in _PACKET_WORDS):
+        return "packet"
+    if any(w in ptype for w in _BRUSH_WORDS):
+        return "brush"
+    return "bottle"   # explicit default, never silent fall-through
+
+
+def _assert_family(case_summary: dict, *, expected: str) -> None:
+    actual = _resolve_family(case_summary)
+    if actual != expected:
+        raise FamilyMismatch(expected, actual)
+
+
+def _assert_intent(intent: str, *, family: str) -> None:
+    if intent not in _ALLOWED_INTENTS[family]:
+        raise HTTPException(
+            status_code=422,
+            detail=f"intent '{intent}' not valid for {family}",
+        )
 
 
 # ------------------------------------------------------------- threads / runs
@@ -386,9 +438,12 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
             }
             for r in opt_row.comparison["rows"]
         ]
-        out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+        out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+            designs, family="bottle"
+        )
     else:
-        # Packet case: map packet scores to the comparison dashboard axes.
+        # Packet case: keep packet-native scores so the dashboard shows packet
+        # axes (no bottle/ISTA vocabulary leaks onto the packet report).
         pkt_opt_row = (
             db.query(PacketOptimizationRun)
             .filter(PacketOptimizationRun.case_id == case_id)
@@ -399,17 +454,20 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
             designs = [
                 {
                     "name": r.get("name") or "Design",
-                    "cost_per_unit": r.get("cost_impact_pct") or 0,
-                    "min_safety_factor": r.get("seal_score") or 0,
-                    "mass_g": r.get("transit_score") or 0,
-                    "roi_pct": r.get("barrier_score") or 0,
-                    "passes_ista": True,
+                    "cost_impact_pct": r.get("cost_impact_pct") or 0,
+                    "seal_score": r.get("seal_score") or 0,
+                    "transit_score": r.get("transit_score") or 0,
+                    "barrier_score": r.get("barrier_score") or 0,
+                    "puncture_score": r.get("puncture_score") or 0,
                 }
                 for r in pkt_opt_row.comparison["rows"]
             ]
-            out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+            out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+                designs, family="packet"
+            )
         else:
-            # Brush case: map brush scores to the comparison dashboard axes.
+            # Brush case: keep brush-native scores so the dashboard shows brush
+            # axes (no bottle/ISTA vocabulary leaks onto the brush report).
             brush_opt_row = (
                 db.query(BrushOptimizationRun)
                 .filter(BrushOptimizationRun.case_id == case_id)
@@ -420,15 +478,17 @@ def build_charts(case_id: str, db: Session = Depends(get_db)):
                 designs = [
                     {
                         "name": r.get("name") or "Design",
-                        "cost_per_unit": r.get("cost_impact_pct") or 0,
-                        "min_safety_factor": r.get("blister_score") or 0,
-                        "mass_g": r.get("transit_score") or 0,
-                        "roi_pct": r.get("material_score") or 0,
-                        "passes_ista": True,
+                        "cost_impact_pct": r.get("cost_impact_pct") or 0,
+                        "blister_score": r.get("blister_score") or 0,
+                        "transit_score": r.get("transit_score") or 0,
+                        "material_score": r.get("material_score") or 0,
+                        "compression_score": r.get("compression_score") or 0,
                     }
                     for r in brush_opt_row.comparison["rows"]
                 ]
-                out["comparison_dashboard"] = charts_svc.comparison_dashboard(designs)
+                out["comparison_dashboard"] = charts_svc.comparison_dashboard(
+                    designs, family="brush"
+                )
 
     return {"case_id": case_id, "charts": out}
 
@@ -566,6 +626,9 @@ def optimize_run(case_id: str, body: OptRunBody, db: Session = Depends(get_db)):
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="bottle")
+    _assert_intent(body.intent, family="bottle")
+
     # Material + geometry context
     s = case.case_summary or {}
     material = MaterialAgent().lookup(db, s.get("material") or "") if s.get("material") else None
@@ -654,6 +717,9 @@ def packet_optimize_run(
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="packet")
+    _assert_intent(body.intent, family="packet")
+
     s = case.case_summary or {}
     emit_status(case_id, stage=case.status, active_agent="packet_optimization",
                 action="generate_alternatives", tool="gemini-2.5-flash",
@@ -723,6 +789,9 @@ def brush_optimize_run(
     if not case:
         raise HTTPException(404)
 
+    _assert_family(case.case_summary or {}, expected="brush")
+    _assert_intent(body.intent, family="brush")
+
     s = case.case_summary or {}
     emit_status(case_id, stage=case.status, active_agent="brush_optimization",
                 action="generate_alternatives", tool="gemini-2.5-flash",
@@ -751,6 +820,17 @@ def brush_optimize_run(
                 action="alternatives_done", confidence="estimated",
                 summary=f"{len(payload['alternatives'])} brush packaging alternatives generated.")
     return payload
+
+
+# ------------------------------------------------- packaging-family lookup
+# Authoritative family for the frontend to dispatch the correct optimizer.
+
+@router.get("/cases/{case_id}/family")
+def case_family(case_id: str, db: Session = Depends(get_db)):
+    case = db.get(Case, case_id)
+    if not case:
+        raise HTTPException(404)
+    return {"family": _resolve_family(case.case_summary or {})}
 
 
 # --------------------------------------------------------- preferences read
@@ -961,6 +1041,8 @@ class TransitPreviewBody(BaseModel):
     mode_mix: dict[str, float] = Field(default_factory=dict)
     road: str = "mixed"
     ship_severity: str = "moderate"
+    durations_min: Optional[dict[str, float]] = None
+    manual_drop_height_m: Optional[float] = None
 
 
 @router.post("/transit/preview")
@@ -975,6 +1057,8 @@ def transit_preview(body: TransitPreviewBody):
         mode_mix=body.mode_mix or {"truck": 1.0},
         road=body.road,
         ship_severity=body.ship_severity,
+        durations_min=body.durations_min,
+        manual_drop_height_m=body.manual_drop_height_m,
     )
 
 
@@ -1004,10 +1088,15 @@ def transit_charts(
 
 @router.get("/transit/available-modes")
 def transit_modes_available():
-    """Modes we have real CSV data for. UI uses this to grey-out modes
-    we can't actually back with data."""
+    """Transit modes for the UI. `data_backed` modes have real CSV telemetry;
+    `selectable` adds reference modes (industry estimates); `reference` lists
+    the estimate-only modes so the UI can badge them."""
     from ..services import transit_data as td
-    return {"modes": td.available_modes()}
+    return {
+        "data_backed": td.available_modes(),
+        "selectable": td.selectable_modes(),
+        "reference": list(td.REFERENCE_MODES),
+    }
 
 
 # ─────────────────────────────────────────── ISTA 6A

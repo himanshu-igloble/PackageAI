@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..models import MaterialRecord
 from ..schemas import MaterialLookupResult
 from ..services import material_cache
+from .flute_resolver import canonical_flute_name
 
 
 _SYNONYMS = {
@@ -47,14 +48,20 @@ _SYNONYMS = {
     "glass": "Glass",
     "aluminum": "Aluminium",
     "aluminium": "Aluminium",
-    "corrugated": "Corrugated B-flute",
     "cardboard": "Corrugated B-flute",
     "kraft": "Kraft Paperboard",
 }
 
 
 def canonicalize(name: str) -> str:
-    return _SYNONYMS.get(name.strip().lower(), name.strip())
+    lower = name.strip().lower()
+    # Flute/corrugated grades resolve via the single flute resolver so that
+    # E/C-flute keep their own records instead of collapsing to B-flute.
+    # PCR/recycled corrugated names are excluded so they pass through unchanged.
+    _c = canonical_flute_name(name)
+    if _c:
+        return _c
+    return _SYNONYMS.get(lower, name.strip())
 
 
 class MaterialAgent:

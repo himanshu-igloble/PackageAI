@@ -28,6 +28,8 @@ from typing import Optional
 import numpy as np
 import trimesh
 
+from backend.agents.flute_resolver import resolve_flute
+
 
 # Legacy 250-stop viridis (kept for parity / power users); the production
 # colormap is now FEA_JET (built programmatically below).
@@ -115,6 +117,9 @@ FEA_JET = _build_jet_lut(256)
 VIRIDIS = FEA_JET           # noqa: F841 (back-compat alias)
 LUT_SIZE = FEA_JET.shape[0]
 
+# McKee box-compression coefficient (BCT = MCKEE_COEFF * ECT * sqrt(perimeter * caliper)).
+MCKEE_COEFF = 5.87
+
 
 def colormap_lut() -> list[list[int]]:
     """Return the active colormap as a JS-shipable list of [r,g,b] in 0..255."""
@@ -137,6 +142,15 @@ def _normalise(x: np.ndarray) -> np.ndarray:
     if hi - lo < 1e-9:
         return np.zeros_like(x)
     return (x - lo) / (hi - lo)
+
+
+def _scale_to_yield(stress_pattern: np.ndarray, utilization: float,
+                    clamp: float = 1.5) -> np.ndarray:
+    """Map a 0..1 positional pattern onto absolute utilization, then to a
+    FIXED 0..clamp colour scale (1.0 == yield). Makes scenes comparable."""
+    pat = _normalise(stress_pattern)            # shape only, 0..1
+    absolute = pat * float(utilization)         # physical utilization per face
+    return np.clip(absolute / clamp, 0.0, 1.0)  # fixed scale, not per-scene
 
 
 @dataclass
@@ -172,6 +186,7 @@ def compute_field(
     material=None,
     stacking_orientation: str = "upright",
     impact_velocity_m_s: Optional[float] = None,
+    stress_inputs: Optional[dict] = None,
 ) -> StressField:
     """Compute a per-face stress field for the given scenario.
 
@@ -273,7 +288,38 @@ def compute_field(
         summary = "Unknown scenario; flat mid-range field returned."
 
     stress = stress * brittle_amp
-    stress_norm = _normalise(stress)
+
+    # Drop-scenario orientation key for the yield-referenced scaling.
+    orient_key = {"drop_top": "top", "drop_bottom": "bottom",
+                  "drop_side": "side", "drop_corner": "corner"}.get(scenario)
+
+    if stress_inputs and orient_key and orient_key in stress_inputs:
+        # Physics-grounded: scale the positional pattern by the real ISTA-2A
+        # yield utilization and map onto a FIXED 0..clamp scale so scenes are
+        # directly comparable (1.0 == yield).
+        util = float(stress_inputs[orient_key]["utilization"])
+        clamp = 1.5
+        stress_norm = _scale_to_yield(stress, util, clamp=clamp)
+        scale = {
+            "mode": "yield_referenced",
+            "units": "sigma_local/sigma_yield",
+            "max_utilization": round(util, 3),
+            "yield_at": 1.0,
+            "clamp": clamp,
+            "colormap": "fea-jet",
+            "stops": LUT_SIZE,
+        }
+    else:
+        # Backward-compatible per-scene min-max path (existing callers that
+        # don't pass stress_inputs, plus transit/unknown scenarios).
+        stress_norm = _normalise(stress)
+        scale = {
+            "min": 0.0,
+            "max": 1.0,
+            "units": "normalised stress (0=low, 1=peak)",
+            "colormap": "viridis",
+            "stops": 250,
+        }
 
     face_colors = _stress_to_color(stress_norm)
     vertex_colors = _per_vertex_from_faces(mesh, face_colors)
@@ -285,13 +331,7 @@ def compute_field(
         per_face_stress=[round(float(x), 4) for x in stress_norm],
         per_face_color=face_colors.tolist(),
         per_vertex_color=vertex_colors.tolist(),
-        scale={
-            "min": 0.0,
-            "max": 1.0,
-            "units": "normalised stress (0=low, 1=peak)",
-            "colormap": "viridis",
-            "stops": 250,
-        },
+        scale=scale,
         summary=summary,
     )
 
@@ -300,7 +340,15 @@ def compute_field(
 # Carton (secondary packaging) heatmap — same philosophy as product heatmaps
 # ---------------------------------------------------------------------------
 
-def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str) -> StressField:
+def mckee_bct_n(*, ect_kn_m: float, caliper_mm: float, perimeter_mm: float) -> float:
+    """McKee box compression estimate. ECT in kN/m (== N/mm), caliper &
+    perimeter in mm. Returns BCT (box compression strength) in newtons."""
+    ect_n_per_mm = ect_kn_m            # kN/m == N/mm
+    return MCKEE_COEFF * ect_n_per_mm * (perimeter_mm * caliper_mm) ** 0.5
+
+
+def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str,
+                          utilization: Optional[float] = None) -> StressField:
     """Heuristic stress field for a rectangular carton box.
 
     Uses the same pipeline as compute_field() — positional face-center math,
@@ -361,7 +409,33 @@ def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str) -> StressField:
         label = scenario.replace("_", " ").title()
         summary = "Carton stress field."
 
-    stress_norm = _normalise(stress)
+    if utilization is not None:
+        # McKee BCT-referenced: scale the positional pattern by the real
+        # applied_load / BCT utilization onto a FIXED 0..clamp scale (1.0 ==
+        # BCT, i.e. predicted crush) so the 3 carton scenes are comparable and
+        # a stronger board (higher BCT -> lower utilization) reads cooler.
+        clamp = 1.5
+        stress_norm = _scale_to_yield(stress, utilization, clamp=clamp)
+        scale = {
+            "mode": "mckee_bct",
+            "units": "applied_load/BCT",
+            "max_utilization": round(utilization, 3),
+            "yield_at": 1.0,
+            "clamp": clamp,
+            "colormap": "fea-jet",
+            "stops": LUT_SIZE,
+        }
+    else:
+        # Backward-compatible per-scene min-max path (no board/load supplied).
+        stress_norm = _normalise(stress)
+        scale = {
+            "min": 0.0,
+            "max": 1.0,
+            "units": "normalised stress (0=low, 1=peak)",
+            "colormap": "fea-jet",
+            "stops": LUT_SIZE,
+        }
+
     face_colors = _stress_to_color(stress_norm)
     vertex_colors = _per_vertex_from_faces(mesh, face_colors)
 
@@ -372,13 +446,7 @@ def _compute_carton_field(mesh: trimesh.Trimesh, scenario: str) -> StressField:
         per_face_stress=[round(float(x), 4) for x in stress_norm],
         per_face_color=face_colors.tolist(),
         per_vertex_color=vertex_colors.tolist(),
-        scale={
-            "min": 0.0,
-            "max": 1.0,
-            "units": "normalised stress (0=low, 1=peak)",
-            "colormap": "fea-jet",
-            "stops": LUT_SIZE,
-        },
+        scale=scale,
         summary=summary,
     )
 
@@ -405,22 +473,78 @@ def build_carton_scenes(case_summary: dict) -> tuple[list[dict], bytes]:
         # Proxy dimensions for a common retail corrugated shipper (mm).
         L, W, H = 400.0, 300.0, 250.0
 
+    # --- McKee BCT physics grounding -------------------------------------
+    # Resolve the corrugated board (E/B/C-flute) -> caliper + ECT. When no
+    # grade is supplied, resolve_flute returns a B-flute fallback, so we always
+    # have a spec to ground the field with.
+    spec = resolve_flute(case_summary.get("carton_board_grade"))
+    perimeter_mm = 2.0 * (L + W)                       # base footprint perimeter
+    bct = mckee_bct_n(
+        ect_kn_m=spec.ect_kn_m,
+        caliper_mm=spec.caliper_mm,
+        perimeter_mm=perimeter_mm,
+    )
+
+    # Applied column load on the BOTTOM carton in a stack.
+    #   applied_load_n = (stack_height - 1) * carton_mass_kg * g
+    # The bottom carton carries everything above it. carton_mass_kg is taken
+    # from case_summary if present (sum of carton_mass_kg + content_mass_kg
+    # when present),
+    # otherwise estimated as carton_volume_m3 * a nominal packed density of
+    # 150 kg/m^3 (light retail goods + board) — a documented stand-in so the
+    # utilization still varies with board grade and stack height.
+    g = 9.80665
+    stack_height = float(
+        case_summary.get("carton_stack_height")
+        or case_summary.get("stack_height")
+        or 1
+    )
+    carton_mass_kg = case_summary.get("carton_mass_kg")
+    content_mass_kg = case_summary.get("content_mass_kg") or 0.0
+    if carton_mass_kg is not None:
+        unit_mass_kg = float(carton_mass_kg) + float(content_mass_kg)
+    else:
+        volume_m3 = (L / 1000.0) * (W / 1000.0) * (H / 1000.0)
+        unit_mass_kg = volume_m3 * 150.0              # nominal packed density
+    cartons_above = max(stack_height - 1.0, 0.0)
+    applied_load_n = cartons_above * unit_mass_kg * g
+
+    utilization = applied_load_n / bct if bct > 1e-9 else 0.0
+
+    # Non-conflicting provenance keys merged onto the carton scene scale on the
+    # load path. The coherent mode/units/max_utilization are owned by
+    # _compute_carton_field; here we only add keys that don't collide.
+    carton_provenance = {
+        "bct_n": round(bct, 1),
+        "applied_load_n": round(applied_load_n, 1),
+        "board_grade_is_fallback": spec.is_fallback,
+    }
+
     # Build and subdivide — 3 subdivisions gives 768 faces / ~386 vertices,
     # enough for smooth heatmap gradients across all face panels.
     mesh = trimesh.creation.box(extents=[L, W, H])
     for _ in range(3):
         mesh = mesh.subdivide()
 
+    # When there's no real applied load (single-high stack / unknown), fall
+    # back to the legacy per-scene normalised field (utilization is None path).
+    field_util = utilization if applied_load_n > 0.0 else None
+
     scenes: list[dict] = []
     for sc in ("carton_top_load", "carton_corner_crush", "carton_side_wall"):
-        field = _compute_carton_field(mesh, sc)
+        field = _compute_carton_field(mesh, sc, utilization=field_util)
+        scene_scale = dict(field.scale)
+        if applied_load_n > 0.0:
+            # Only add non-conflicting provenance keys; do NOT overwrite the
+            # units/mode/max_utilization owned by _compute_carton_field.
+            scene_scale.update(carton_provenance)
         scenes.append({
             "scenario": field.scenario,
             "label": field.label,
             "summary": field.summary,
             "n_cells": field.n_cells,
             "per_vertex_color": field.per_vertex_color,
-            "scale": field.scale,
+            "scale": scene_scale,
         })
 
     # Export the same mesh as GLB bytes; the frontend creates a blob URL.

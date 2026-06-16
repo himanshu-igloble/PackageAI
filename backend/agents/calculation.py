@@ -11,6 +11,7 @@ import math
 from typing import Optional
 
 from ..schemas import CalculationOutput
+from .flute_resolver import resolve_flute
 
 
 GRAVITY = 9.80665  # m/s^2
@@ -56,24 +57,34 @@ class CalculationAgent:
         allowable_stress_mpa: float,
         load_bearing_area_mm2: float,
         threshold: float = 1.5,
+        board_grade: Optional[str] = None,
     ) -> CalculationOutput:
-        """Compares applied compressive stress against material allowable stress."""
+        """Compares applied compressive stress against material allowable stress.
+
+        When `board_grade` is supplied (e.g. a carton/secondary-packaging board
+        like "E-flute"), the resolved corrugated MaterialRecord name is recorded
+        in the inputs trace as `board_grade_used` for provenance (Task D3), so an
+        auditor can confirm WHICH flute drove the compression result.
+        """
         if applied_load_n <= 0 or allowable_stress_mpa <= 0 or load_bearing_area_mm2 <= 0:
             raise ValueError("All inputs must be > 0")
         applied_mpa = applied_load_n / load_bearing_area_mm2     # N / mm^2 == MPa
         sf = allowable_stress_mpa / applied_mpa
+        inputs = {
+            "applied_load_n": applied_load_n,
+            "allowable_stress_mpa": allowable_stress_mpa,
+            "load_bearing_area_mm2": load_bearing_area_mm2,
+            "applied_stress_mpa": round(applied_mpa, 4),
+            "threshold": threshold,
+        }
+        if board_grade:
+            inputs["board_grade_used"] = resolve_flute(board_grade).record_name
         return CalculationOutput(
             label="compression_safety_factor",
             value=round(sf, 3),
             units="dimensionless",
             formula="SF = allowable_stress / (applied_load / area)",
-            inputs={
-                "applied_load_n": applied_load_n,
-                "allowable_stress_mpa": allowable_stress_mpa,
-                "load_bearing_area_mm2": load_bearing_area_mm2,
-                "applied_stress_mpa": round(applied_mpa, 4),
-                "threshold": threshold,
-            },
+            inputs=inputs,
             safety_factor=round(sf, 3),
             risk_flag=sf < threshold,
             confidence="estimated",  # depends on area estimation upstream

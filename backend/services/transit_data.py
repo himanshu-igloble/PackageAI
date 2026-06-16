@@ -39,6 +39,29 @@ FILES: dict[str, str] = {
 
 ROAD_LABELS = ("smooth_highway", "mixed", "rough_secondary", "off_road")
 
+# Default per-mode vibration-exposure durations (minutes). Used when the caller
+# does not supply an explicit duration for a mode in the mix.
+_DEFAULT_DURATION_MIN: dict[str, float] = {
+    "truck": 480.0,        # 8 h
+    "pickup": 120.0,       # 2 h
+    "ship": 7 * 24 * 60.0, # 7 days
+    "air": 6 * 60.0,       # 6 h
+    "rail": 24 * 60.0,     # 24 h
+    "manual_handling": 5.0,
+}
+
+# Fallback vibration-exposure duration (minutes) when a mode has no default and
+# the caller supplies none.
+_FALLBACK_DURATION_MIN: float = 60.0
+
+# The CSV's road_type categories don't 1:1 match ours; map intelligently.
+ROAD_TYPE_MAP: dict[str, set[str]] = {
+    "smooth_highway":  {"motorway"},
+    "mixed":           {"rural", "motorway", "urban"},
+    "rough_secondary": {"rural", "urban"},
+    "off_road":        {"rural"},
+}
+
 
 # ─────────────────────────────────────────────────────────── lazy CSV loader
 
@@ -57,26 +80,24 @@ def available() -> bool:
     return any((DATA_DIR / f).exists() for f in FILES.values())
 
 
+def _exists(key: str) -> bool:
+    """True if the CSV backing `key` is present on disk."""
+    fname = FILES.get(key)
+    return bool(fname) and (DATA_DIR / fname).exists()
+
+
 # ──────────────────────────────────────────────────── envelope per transport
 
 
-def truck_envelope(road: str = "mixed") -> dict[str, Any]:
-    """Truck-mode envelope from real fleet telemetry.
+def _summarise_road_df(df: pd.DataFrame, road_types: set[str]) -> dict[str, Any]:
+    """Shared road-telemetry summary used by truck/pickup envelopes.
 
-    `road` is one of ROAD_LABELS. We filter the CSV's `road_type` (urban /
-    rural / motorway / unknown) into our four categories, then compute g_rms
-    from the `acceleration_ms2` column plus shock + roughness summaries.
+    Filters `df` by the CSV's `road_type` column to the supplied `road_types`,
+    then computes the g_rms / shock / roughness summary. The acceleration →
+    g_rms blend (GPS-derived value vs. the ISTA truck PSD reference) is kept
+    EXACTLY as the original truck envelope computed it.
     """
-    df = _load("truck")
-    # The CSV's road_type categories don't 1:1 match ours; map intelligently.
-    rtm = {
-        "smooth_highway":  ("motorway",),
-        "mixed":           ("rural", "motorway", "urban"),
-        "rough_secondary": ("rural", "urban"),
-        "off_road":        ("rural",),
-    }
-    keep = rtm.get(road, ("rural", "motorway", "urban"))
-    sub = df[df["road_type"].isin(keep)]
+    sub = df[df["road_type"].isin(road_types)]
     if len(sub) == 0:
         sub = df  # graceful degrade
 
@@ -104,8 +125,6 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
     psd_bins = psd_series.dropna().iloc[::max(1, len(psd_series) // 64)].head(64).tolist()
 
     return {
-        "mode": "truck",
-        "road": road,
         "n_rows": int(len(sub)),
         "g_rms": round(g_rms, 4),
         "g_p95": round(g_p95, 4),
@@ -113,8 +132,28 @@ def truck_envelope(road: str = "mixed") -> dict[str, Any]:
         "rough_road_prob": round(rough_mean, 3),
         "handling_risk_mean": round(handling_mean, 3),
         "psd_bins": [round(float(x), 6) for x in psd_bins],
-        "source_file": FILES["truck"],
     }
+
+
+def truck_envelope(road: str = "mixed") -> dict[str, Any]:
+    """Truck-mode envelope from real fleet telemetry.
+
+    `road` is one of ROAD_LABELS. We filter the CSV's `road_type` (urban /
+    rural / motorway / unknown) into our four categories, then compute g_rms
+    from the `acceleration_ms2` column plus shock + roughness summaries.
+    """
+    df = _load("truck")
+    env = _summarise_road_df(df, ROAD_TYPE_MAP.get(road, ROAD_TYPE_MAP["mixed"]))
+    env.update(mode="truck", road=road, source_file=FILES["truck"])
+    return env
+
+
+def pickup_envelope(road: str = "mixed") -> dict[str, Any]:
+    """Pickup-truck vibration/shock envelope. Same telemetry schema as truck."""
+    df = _load("pickup")
+    env = _summarise_road_df(df, ROAD_TYPE_MAP.get(road, ROAD_TYPE_MAP["mixed"]))
+    env.update(mode="pickup", road=road, source_file=FILES["pickup"])
+    return env
 
 
 def ship_envelope(severity: str = "moderate") -> dict[str, Any]:
@@ -245,12 +284,14 @@ def ship_time_series(severity: str = "moderate", *, max_points: int = 8000) -> d
 
 def available_modes() -> list[str]:
     """Modes we have actual CSV data for. The UI only offers these as choices."""
-    have = []
-    if (DATA_DIR / FILES["truck"]).exists():
-        have.append("truck")
-    if any((DATA_DIR / FILES[f"ship_{s}"]).exists() for s in ("clean", "moderate", "severe")):
-        have.append("ship")
-    return have
+    modes: list[str] = []
+    if _exists("truck"):
+        modes.append("truck")
+    if _exists("pickup"):
+        modes.append("pickup")
+    if any(_exists(k) for k in ("ship_clean", "ship_moderate", "ship_severe")):
+        modes.append("ship")
+    return modes
 
 
 def air_envelope() -> dict[str, Any]:
@@ -268,12 +309,45 @@ def air_envelope() -> dict[str, Any]:
     }
 
 
-def manual_handling_envelope() -> dict[str, Any]:
-    """Hand-loading / parcel terminal envelope. Reference values."""
+def rail_envelope() -> dict[str, Any]:
+    """Rail reference envelope (no telemetry CSV yet). Rail freight is low
+    high-frequency vibration but exposes goods to longitudinal coupling/humping
+    shocks (AAR/ASTM D4169 DC-13). Conservative industry references, not measured."""
+    return {
+        "mode": "rail",
+        "g_rms": 0.30,
+        "g_p95": 0.80,
+        "coupling_shock_g": 5.0,
+        "shock_risk_p95": 0.55,
+        "handling_risk_mean": 0.40,
+        "source_file": "industry_reference",
+    }
+
+
+REFERENCE_MODES = ("air", "rail", "manual_handling")
+
+
+def selectable_modes() -> list[str]:
+    """All modes a user may select: data-backed + reference."""
+    return available_modes() + list(REFERENCE_MODES)
+
+
+def is_reference_mode(mode: str) -> bool:
+    return mode in REFERENCE_MODES
+
+
+def manual_handling_envelope(drop_height_m: float | None = None) -> dict[str, Any]:
+    """Hand-loading / parcel terminal envelope. Reference values.
+
+    `drop_height_m` defaults to ~0.91 m (~3 ft typical parcel handling) but
+    may be overridden by the user to reflect a known handling profile.
+    """
+    if drop_height_m is None:
+        drop_height_m = 0.91
     return {
         "mode": "manual_handling",
         "n_rows": 0,
-        "drop_height_m": 0.91,    # ~3 ft typical parcel handling
+        "drop_height_m": float(drop_height_m),
         "handling_risk_mean": 0.85,
         "source_file": "industry_reference",
     }
@@ -286,12 +360,18 @@ def blended_envelope(
     mode_mix: dict[str, float],
     road: str = "mixed",
     ship_severity: str = "moderate",
+    manual_drop_height_m: float | None = None,
+    durations_min: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Weight-blend per-mode envelopes by the user-supplied mode mix.
 
     `mode_mix` is e.g. {"truck": 0.5, "ship": 0.3, "air": 0.2}. Weights are
-    re-normalised. Returned envelope carries:
+    re-normalised. `durations_min` optionally overrides the per-mode default
+    vibration-exposure minutes (`_DEFAULT_DURATION_MIN`); unspecified modes use
+    their default. Returned envelope carries:
         g_rms          composite, weighted
+        vibration_duration_min  composite weighted exposure minutes (falls back
+                       to the default of the fallback mode when the mix is empty)
         drop_height_m  worst-case across modes (manual handling dominates)
         compression_load_n  derived from g + duration heuristics
         sources        list of {mode, file, n_rows} for citation
@@ -302,16 +382,41 @@ def blended_envelope(
     parts: list[tuple[str, float, dict[str, Any]]] = []
     if norm.get("truck"):
         parts.append(("truck", norm["truck"], truck_envelope(road)))
+    if norm.get("pickup"):
+        parts.append(("pickup", norm["pickup"], pickup_envelope(road)))
     if norm.get("ship"):
         parts.append(("ship", norm["ship"], ship_envelope(ship_severity)))
     if norm.get("air"):
         parts.append(("air", norm["air"], air_envelope()))
+    if norm.get("rail"):
+        parts.append(("rail", norm["rail"], rail_envelope()))
     if norm.get("manual_handling"):
-        parts.append(("manual_handling", norm["manual_handling"], manual_handling_envelope()))
+        parts.append((
+            "manual_handling",
+            norm["manual_handling"],
+            manual_handling_envelope(drop_height_m=manual_drop_height_m),
+        ))
 
     if not parts:
         # Default to mixed truck.
         parts.append(("truck", 1.0, truck_envelope("mixed")))
+
+    # Composite vibration-exposure duration: weighted sum of per-mode minutes
+    # (caller-supplied durations override the per-mode defaults).
+    durations_min = durations_min or {}
+    vib_minutes = 0.0
+    for mode, w in norm.items():
+        default = _DEFAULT_DURATION_MIN.get(mode, _FALLBACK_DURATION_MIN)
+        vib_minutes += w * float(durations_min.get(mode, default))
+    if not norm:
+        # No weighted modes: `parts` fell back to a single mode (truck). Mirror
+        # that fallback so the duration reflects the mode actually summarised,
+        # rather than collapsing to 0.0.
+        fallback_mode = parts[0][0]
+        vib_minutes = durations_min.get(
+            fallback_mode,
+            _DEFAULT_DURATION_MIN.get(fallback_mode, _FALLBACK_DURATION_MIN),
+        )
 
     g_rms = sum(w * env.get("g_rms", 0.0) for _, w, env in parts)
     drop_h = max(env.get("drop_height_m", 0.0) for _, _, env in parts) or 0.61
@@ -336,6 +441,7 @@ def blended_envelope(
     return {
         "mode_mix": norm,
         "g_rms": round(g_rms, 4),
+        "vibration_duration_min": round(vib_minutes, 1),
         "drop_height_m": round(drop_h, 3),
         "compression_load_n": round(compression_n, 1),
         "handling_fraction": round(min(handling, 1.0), 3),

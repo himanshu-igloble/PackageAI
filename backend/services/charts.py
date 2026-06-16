@@ -5,7 +5,7 @@ Charts produced for the tabbed report:
     density_compare       — material density bar chart
     zone_risk_bar         — surrogate zone risk scores
     drop_verdict_bar      — ISTA-2A per-orientation safety factors
-    comparison_dashboard  — original vs 3 alternatives (cost / SF / mass)
+    comparison_dashboard  — original vs alternatives on family-native axes
 
 Every function returns {"png_b64": str, "csv": str} so the UI can render
 inline and the user can download underlying data.
@@ -168,41 +168,84 @@ def drop_verdict_bar(drops: list[dict]) -> dict:
 
 # ---------------------------------------------------------------- comparison
 
-def comparison_dashboard(designs: list[dict]) -> dict:
-    """Three or four designs side-by-side: cost, safety_factor, mass, ROI.
+# Per-family axes for the comparison dashboard. Each axis is
+# (csv_column, chart_title, design_dict_key). Bottle keeps the original
+# cost/safety-factor/mass/ROI + passes-ISTA outline contract; packet and brush
+# use their own native scores so no ISTA/bottle vocabulary leaks onto their
+# dashboards.
+_DASHBOARD_AXES = {
+    "bottle": [
+        ("cost_per_unit",     "Unit cost ($)",       "cost_per_unit"),
+        ("min_safety_factor", "Min safety factor",   "min_safety_factor"),
+        ("mass_g",            "Unit mass (g)",        "mass_g"),
+        ("roi_pct",           "ROI (%)",              "roi_pct"),
+    ],
+    "packet": [
+        ("cost_impact_pct", "Cost impact (%)",  "cost_impact_pct"),
+        ("seal_score",      "Seal score",       "seal_score"),
+        ("transit_score",   "Transit score",    "transit_score"),
+        ("barrier_score",   "Barrier score",    "barrier_score"),
+        ("puncture_score",  "Puncture score",   "puncture_score"),
+    ],
+    "brush": [
+        ("cost_impact_pct",    "Cost impact (%)",     "cost_impact_pct"),
+        ("blister_score",      "Blister score",       "blister_score"),
+        ("transit_score",      "Transit score",       "transit_score"),
+        ("material_score",     "Material score",      "material_score"),
+        ("compression_score",  "Compression score",   "compression_score"),
+    ],
+}
 
-    designs: [{"name", "cost_per_unit", "min_safety_factor", "mass_g", "roi_pct", "passes_ista"}, ...]
+_DASHBOARD_PALETTE = [ACCENT, ACCENT_2, WARN, "#9b59b6", "#3498db"]
+
+
+def comparison_dashboard(designs: list[dict], family: str = "bottle") -> dict:
+    """Designs side-by-side on family-native axes.
+
+    bottle designs: {"name", "cost_per_unit", "min_safety_factor", "mass_g",
+                     "roi_pct", "passes_ista"}
+    packet designs: {"name", "cost_impact_pct", "seal_score", "transit_score",
+                     "barrier_score", "puncture_score"}
+    brush  designs: {"name", "cost_impact_pct", "blister_score", "transit_score",
+                     "material_score", "compression_score"}
+
+    For non-bottle families NO bottle/ISTA vocabulary (min_safety_factor,
+    mass_g, roi_pct, passes_ista, cost_per_unit) appears in the chart titles
+    or the CSV header.
     """
     if not designs:
         return {"png_b64": "", "csv": ""}
-    names = [d["name"] for d in designs]
-    cost = [d.get("cost_per_unit") or 0 for d in designs]
-    sf   = [d.get("min_safety_factor") or 0 for d in designs]
-    mass = [d.get("mass_g") or 0 for d in designs]
-    roi  = [d.get("roi_pct") or 0 for d in designs]
 
-    fig, axes = plt.subplots(1, 4, figsize=(11, 3.2))
-    titles = ["Unit cost ($)", "Min safety factor", "Unit mass (g)", "ROI (%)"]
-    series = [cost, sf, mass, roi]
-    palettes = [ACCENT, ACCENT_2, WARN, "#9b59b6"]
-    for ax, t, ser, c in zip(axes, titles, series, palettes):
+    axes_spec = _DASHBOARD_AXES.get(family, _DASHBOARD_AXES["bottle"])
+    names = [d["name"] for d in designs]
+    series = [[d.get(key) or 0 for d in designs] for _, _, key in axes_spec]
+
+    fig, axes = plt.subplots(1, len(axes_spec), figsize=(2.75 * len(axes_spec), 3.2))
+    if len(axes_spec) == 1:  # plt.subplots returns a bare Axes for n==1
+        axes = [axes]
+    for ax, (_, title, _key), ser, c in zip(axes, axes_spec, series,
+                                             _DASHBOARD_PALETTE):
         bars = ax.bar(names, ser, color=c, edgecolor="#232a36")
-        ax.set_title(t)
+        ax.set_title(title)
         plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         for i, v in enumerate(ser):
             ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=7)
-        # Mark passing-ISTA designs with a green outline
-        for i, d in enumerate(designs):
-            if d.get("passes_ista"):
-                bars[i].set_edgecolor(ACCENT_2)
-                bars[i].set_linewidth(2)
+        # Bottle only: mark passing-ISTA designs with a green outline.
+        if family == "bottle":
+            for i, d in enumerate(designs):
+                if d.get("passes_ista"):
+                    bars[i].set_edgecolor(ACCENT_2)
+                    bars[i].set_linewidth(2)
     fig.suptitle("Original vs Optimised designs", fontsize=11)
 
-    rows = [
-        [n, c, s, m, r, d.get("passes_ista")]
-        for n, c, s, m, r, d in zip(names, cost, sf, mass, roi, designs)
-    ]
+    header = ["design"] + [col for col, _, _ in axes_spec]
+    rows = [[n] + [d.get(key) or 0 for _, _, key in axes_spec]
+            for n, d in zip(names, designs)]
+    if family == "bottle":
+        header.append("passes_ista")
+        for row, d in zip(rows, designs):
+            row.append(d.get("passes_ista"))
     return {
         "png_b64": _fig_to_b64(fig),
-        "csv": _csv(["design", "cost_per_unit", "min_safety_factor", "mass_g", "roi_pct", "passes_ista"], rows),
+        "csv": _csv(header, rows),
     }
